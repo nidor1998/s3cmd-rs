@@ -27,6 +27,15 @@ use std::process::{Command, Stdio};
 fn run_s7cmd(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_s7cmd"))
         .args(args)
+        // Neutralize any ambient RUST_LOG. When RUST_LOG is set the binary uses
+        // it verbatim as the tracing filter, overriding its own default; a value
+        // that surfaces only the `s7cmd` target (e.g. `s7cmd=trace`) then hides
+        // library-crate log lines these tests assert on — notably the dry-run
+        // annotation-sync line, which is emitted from `s3util_rs`. Removing it
+        // falls back to the binary's default filter, which surfaces both `s7cmd`
+        // and `s3util_rs` at the dry-run-forced info level, so the assertions are
+        // deterministic regardless of the caller's environment.
+        .env_remove("RUST_LOG")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
