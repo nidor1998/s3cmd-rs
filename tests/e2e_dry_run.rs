@@ -152,6 +152,148 @@ async fn mv_dry_run_leaves_source_and_target_unchanged() {
 }
 
 // -----------------------------------------------------------------
+// cp / mv dry-run with --enable-sync-object-annotations (s3util-rs 1.6.0)
+//
+// A real S3-to-S3 run copies the source object's annotations, so a faithful
+// --dry-run must LOG each annotation it would copy — while still mutating
+// nothing. These guard the vendored runner actually calling
+// log_dry_run_annotation_sync from its dry-run branch; the short-circuit
+// previously returned a placeholder before the S3 source was ever built, so
+// the annotation lines were silently dropped and a real run copied more than
+// the dry-run reported.
+// -----------------------------------------------------------------
+
+#[tokio::test]
+async fn cp_dry_run_enable_sync_object_annotations_logs_would_copy_annotation() {
+    let helper = TestHelper::new().await;
+    let bucket = generate_bucket_name();
+    helper.create_bucket(&bucket, REGION).await;
+
+    let source_key = "dry-run-annotation-cp-src.txt";
+    let target_key = "dry-run-annotation-cp-dst.txt";
+    let annotation_name = "review-status";
+
+    // Source object plus one annotation a real run would copy.
+    helper
+        .put_object(&bucket, source_key, b"annotated body".to_vec())
+        .await;
+    helper
+        .put_object_annotation(&bucket, source_key, None, annotation_name, b"approved")
+        .await;
+
+    let source_arg = format!("s3://{bucket}/{source_key}");
+    let target_arg = format!("s3://{bucket}/{target_key}");
+    let output = run_s7cmd(&[
+        "cp",
+        "--dry-run",
+        "--enable-sync-object-annotations",
+        "--source-profile",
+        "s7cmd-e2e-test",
+        "--target-profile",
+        "s7cmd-e2e-test",
+        &source_arg,
+        &target_arg,
+    ]);
+    assert_dry_run_success(&output, "would copy");
+
+    // The 1.6.0 dry-run must additionally enumerate each annotation a real
+    // run would copy — the behavior the vendored runner was missing.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("would copy object annotation"),
+        "cp --dry-run --enable-sync-object-annotations must log the annotation \
+         it would copy; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(annotation_name),
+        "the annotation name must appear in the dry-run annotation log; stderr: {stderr}"
+    );
+
+    // Central dry-run guarantee: nothing is mutated. No target object means
+    // no target annotation either.
+    let target_created = helper.is_object_exist(&bucket, target_key, None).await;
+    let target_annotation_created = helper
+        .is_object_annotation_exist(&bucket, target_key, None, annotation_name)
+        .await;
+    helper.delete_bucket_with_cascade(&bucket).await;
+
+    assert!(
+        !target_created,
+        "cp --dry-run must NOT create the target object"
+    );
+    assert!(
+        !target_annotation_created,
+        "cp --dry-run must NOT create the target annotation"
+    );
+}
+
+#[tokio::test]
+async fn mv_dry_run_enable_sync_object_annotations_logs_and_preserves_source() {
+    let helper = TestHelper::new().await;
+    let bucket = generate_bucket_name();
+    helper.create_bucket(&bucket, REGION).await;
+
+    let source_key = "dry-run-annotation-mv-src.txt";
+    let target_key = "dry-run-annotation-mv-dst.txt";
+    let annotation_name = "retention";
+
+    helper
+        .put_object(&bucket, source_key, b"annotated body".to_vec())
+        .await;
+    helper
+        .put_object_annotation(&bucket, source_key, None, annotation_name, b"30d")
+        .await;
+
+    let source_arg = format!("s3://{bucket}/{source_key}");
+    let target_arg = format!("s3://{bucket}/{target_key}");
+    let output = run_s7cmd(&[
+        "mv",
+        "--dry-run",
+        "--enable-sync-object-annotations",
+        "--source-profile",
+        "s7cmd-e2e-test",
+        "--target-profile",
+        "s7cmd-e2e-test",
+        &source_arg,
+        &target_arg,
+    ]);
+    assert_dry_run_success(&output, "would copy");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("would copy object annotation"),
+        "mv --dry-run --enable-sync-object-annotations must log the annotation \
+         it would copy; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(annotation_name),
+        "the annotation name must appear in the dry-run annotation log; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("would delete source object"),
+        "mv --dry-run must still log the source-delete intent; stderr: {stderr}"
+    );
+
+    // Nothing mutated: source (and its annotation) stays, target absent.
+    let source_still_there = helper.is_object_exist(&bucket, source_key, None).await;
+    let source_annotation_still_there = helper
+        .is_object_annotation_exist(&bucket, source_key, None, annotation_name)
+        .await;
+    let target_created = helper.is_object_exist(&bucket, target_key, None).await;
+    helper.delete_bucket_with_cascade(&bucket).await;
+
+    assert!(
+        source_still_there,
+        "mv --dry-run must NOT delete the source"
+    );
+    assert!(
+        source_annotation_still_there,
+        "mv --dry-run must NOT remove the source annotation"
+    );
+    assert!(!target_created, "mv --dry-run must NOT create the target");
+}
+
+// -----------------------------------------------------------------
 // rm dry-run: object must still exist
 // -----------------------------------------------------------------
 

@@ -213,32 +213,76 @@ pub async fn run_copy_phase(config: Config) -> Result<CopyPhase> {
 
     let resolved_target_display = format_target_path(&config.target, &target_key);
 
-    // Dry-run short-circuit: log the would-do action and skip every
-    // remote/local I/O (transfer, indicator, ctrl-c handler, rate limiter).
-    // run_mv has its own dry-run guard around the source delete, so the
-    // placeholder source_storage built here is never invoked.
+    // Dry-run short-circuit: log the would-do action and skip the transfer,
+    // indicator, ctrl-c handler, and rate limiter.
+    //
+    // A real S3-to-S3 run also syncs the source object's annotations (that
+    // logic lives in the library `transfer()` this command calls). To keep
+    // --dry-run honest we mirror upstream and log each annotation a real run
+    // would copy — which needs the real S3 source, so it is built here when
+    // (and only when) the direction is S3-to-S3 and
+    // --enable-sync-object-annotations is set. `log_dry_run_annotation_sync`
+    // is otherwise a no-op and makes only a read-only ListObjectAnnotations
+    // call; every other case keeps the cheap LocalStorage placeholder and
+    // skips all I/O. run_mv's own dry-run guard returns before the source
+    // delete, so whichever source_storage is handed back here is never
+    // invoked for a mutation.
     if config.dry_run {
         info!(
             source = %source_str,
             target = %resolved_target_display,
             "[dry-run] would copy."
         );
+
         let (stats_sender, _stats_receiver) = async_channel::unbounded();
-        let placeholder_source = LocalStorageFactory::create(
-            config.clone(),
-            empty_local_storage_path(),
-            cancellation_token.clone(),
-            stats_sender,
-            None,
-            None,
-            None,
-            Arc::new(AtomicBool::new(false)),
-            None,
-        )
-        .await;
+
+        let (transfer_result, source_storage) = if config.enable_sync_object_annotations
+            && matches!(direction, TransferDirection::S3ToS3)
+        {
+            let source_request_payer = if config.source_request_payer {
+                Some(RequestPayer::Requester)
+            } else {
+                None
+            };
+            let source = S3StorageFactory::create(
+                config.clone(),
+                empty_s3_storage_path(&config.source),
+                cancellation_token.clone(),
+                stats_sender,
+                config.source_client_config.clone(),
+                source_request_payer,
+                None,
+                Arc::new(AtomicBool::new(false)),
+                None,
+            )
+            .await;
+            let result = s3util_rs::transfer::s3_to_s3::log_dry_run_annotation_sync(
+                &config,
+                &source,
+                &source_key,
+            )
+            .await
+            .map(|()| TransferOutcome::default());
+            (result, source)
+        } else {
+            let placeholder_source = LocalStorageFactory::create(
+                config.clone(),
+                empty_local_storage_path(),
+                cancellation_token.clone(),
+                stats_sender,
+                None,
+                None,
+                None,
+                Arc::new(AtomicBool::new(false)),
+                None,
+            )
+            .await;
+            (Ok(TransferOutcome::default()), placeholder_source)
+        };
+
         return Ok(CopyPhase {
-            transfer_result: Ok(TransferOutcome::default()),
-            source_storage: placeholder_source,
+            transfer_result,
+            source_storage,
             source_key,
             cancellation_token,
             cancelled: false,
