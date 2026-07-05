@@ -72,6 +72,269 @@ pub fn create_sized_file(dir: &Path, name: &str, size: usize) -> PathBuf {
     path
 }
 
+// === Mock S3 endpoint (no AWS, no network beyond loopback) ===
+
+/// One canned HTTP response served by [`MockS3Server`].
+pub struct MockResponse {
+    pub status: u16,
+    /// Extra response headers, e.g. `("ETag", "\"abc\"")`. `Content-Length`,
+    /// `Content-Type` (application/xml) and `Connection: close` are added
+    /// automatically.
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    /// Delay before writing the response — used by broken-pipe tests to
+    /// guarantee the parent closes the child's stdout before the child
+    /// receives (and prints) the listing.
+    pub delay: Option<std::time::Duration>,
+}
+
+impl MockResponse {
+    pub fn new(status: u16, body: impl Into<Vec<u8>>) -> Self {
+        Self {
+            status,
+            headers: Vec::new(),
+            body: body.into(),
+            delay: None,
+        }
+    }
+
+    pub fn with_headers(mut self, headers: &[(&str, &str)]) -> Self {
+        self.headers = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        self
+    }
+
+    pub fn with_delay(mut self, delay: std::time::Duration) -> Self {
+        self.delay = Some(delay);
+        self
+    }
+
+    /// Standard S3 error response: XML body with the given error `code`,
+    /// served with the given HTTP status. The AWS SDK extracts `<Code>` and
+    /// s3util-rs / s3rm-rs / s3ls-rs classify arms off it, so this is how
+    /// tests drive specific `NoSuchBucket` / `NoSuchKey` / `NoSuchAnnotation`
+    /// / subresource-not-found match arms without AWS.
+    pub fn s3_error(status: u16, code: &str) -> Self {
+        let body = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <Error><Code>{code}</Code><Message>mock {code}</Message>\
+             <RequestId>mock-request-id</RequestId></Error>"
+        );
+        Self::new(status, body.into_bytes())
+    }
+}
+
+/// Minimal single-threaded HTTP/1.1 server that plays back `responses` in
+/// order, one per request, repeating the last response for any extra
+/// requests (e.g. SDK retries). Each response is served with
+/// `Connection: close`. Requests with `Expect: 100-continue` get the interim
+/// response so the SDK proceeds to send the body without waiting.
+///
+/// Point s7cmd at it with `--target-endpoint-url` (see [`mock_target_args`]).
+/// The SDK uses path-style addressing automatically because the host is an
+/// IP literal, so any bucket name works.
+pub struct MockS3Server {
+    addr: std::net::SocketAddr,
+    requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl MockS3Server {
+    pub fn start(responses: Vec<MockResponse>) -> Self {
+        assert!(!responses.is_empty(), "need at least one mock response");
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock S3 server on loopback");
+        let addr = listener.local_addr().expect("mock server local_addr");
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let thread_requests = std::sync::Arc::clone(&requests);
+        let thread_shutdown = std::sync::Arc::clone(&shutdown);
+        let handle = std::thread::spawn(move || {
+            let mut served = 0usize;
+            for stream in listener.incoming() {
+                if thread_shutdown.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(stream) = stream else { continue };
+                let response = &responses[served.min(responses.len() - 1)];
+                if serve_one(stream, response, &thread_requests).is_ok() {
+                    served += 1;
+                }
+            }
+        });
+
+        Self {
+            addr,
+            requests,
+            shutdown,
+            handle: Some(handle),
+        }
+    }
+
+    pub fn endpoint_url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    /// Request lines seen so far, as `"METHOD /path?query"`.
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+impl Drop for MockS3Server {
+    fn drop(&mut self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Unblock the accept() so the thread observes the flag and exits.
+        let _ = std::net::TcpStream::connect(self.addr);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Serve a single request on `stream` with `response`. Returns Err if the
+/// connection was not a parseable HTTP request (e.g. the wake-up probe from
+/// `Drop`), so it isn't counted against the response sequence.
+fn serve_one(
+    mut stream: std::net::TcpStream,
+    response: &MockResponse,
+    requests: &std::sync::Mutex<Vec<String>>,
+) -> Result<(), ()> {
+    use std::io::{Read, Write};
+
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
+
+    // Read the request head (start line + headers).
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        match stream.read(&mut byte) {
+            Ok(1) => head.push(byte[0]),
+            _ => return Err(()), // disconnect/timeout before a full head
+        }
+        if head.len() > 64 * 1024 {
+            return Err(());
+        }
+    }
+    let head_text = String::from_utf8_lossy(&head).to_string();
+    let request_line = head_text.split("\r\n").next().unwrap_or_default();
+    let mut parts = request_line.split_whitespace();
+    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
+        return Err(());
+    };
+    requests.lock().unwrap().push(format!("{method} {target}"));
+
+    let header = |name: &str| -> Option<String> {
+        head_text.split("\r\n").skip(1).find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| v.trim().to_string())
+        })
+    };
+
+    // Let bodies with Expect: 100-continue proceed immediately.
+    if header("expect").is_some_and(|v| v.eq_ignore_ascii_case("100-continue")) {
+        let _ = stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
+    }
+
+    // Drain the request body so the client finishes writing before we
+    // respond and close. (The AWS SDK sends sized bodies, not chunked.)
+    if let Some(len) = header("content-length").and_then(|v| v.parse::<usize>().ok()) {
+        let mut remaining = len;
+        let mut buf = [0u8; 4096];
+        while remaining > 0 {
+            match stream.read(&mut buf[..remaining.min(4096)]) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => remaining -= n,
+            }
+        }
+    }
+
+    if let Some(delay) = response.delay {
+        std::thread::sleep(delay);
+    }
+
+    let reason = match response.status {
+        200 => "OK",
+        202 => "Accepted",
+        204 => "No Content",
+        403 => "Forbidden",
+        404 => "Not Found",
+        _ => "Mock",
+    };
+    // HEAD responses must not carry a body.
+    let body: &[u8] = if method == "HEAD" {
+        b""
+    } else {
+        &response.body
+    };
+    let mut out = format!(
+        "HTTP/1.1 {} {}\r\ncontent-type: application/xml\r\ncontent-length: {}\r\nx-amz-request-id: mock-request-id\r\nconnection: close\r\n",
+        response.status,
+        reason,
+        body.len()
+    );
+    for (k, v) in &response.headers {
+        out.push_str(&format!("{k}: {v}\r\n"));
+    }
+    out.push_str("\r\n");
+    let _ = stream.write_all(out.as_bytes());
+    let _ = stream.write_all(body);
+    let _ = stream.flush();
+    Ok(())
+}
+
+/// The standard client flags for pointing a subcommand at a [`MockS3Server`]:
+/// explicit endpoint, static credentials and region (so no profile, IMDS or
+/// config-file lookup happens), and a single attempt (no retries), keeping
+/// the request↔response sequence 1:1.
+pub fn mock_target_args(endpoint_url: &str) -> Vec<String> {
+    [
+        "--target-endpoint-url",
+        endpoint_url,
+        "--target-access-key",
+        "mock-access-key",
+        "--target-secret-access-key",
+        "mock-secret-key",
+        "--target-region",
+        "us-east-1",
+        "--aws-max-attempts",
+        "1",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// [`mock_target_args`] for subcommands whose client flags are
+/// `--source-*`-prefixed (e.g. `rename`, which is source-oriented).
+pub fn mock_source_args(endpoint_url: &str) -> Vec<String> {
+    mock_target_args(endpoint_url)
+        .iter()
+        .map(|s| s.replace("--target-", "--source-"))
+        .collect()
+}
+
+/// `s7cmd_cmd()` with ambient environment that could redirect or re-level
+/// the run scrubbed away: mock tests must talk only to the mock endpoint
+/// and assert on default-verbosity output.
+pub fn s7cmd_cmd_clean_env() -> Command {
+    let mut cmd = s7cmd_cmd();
+    cmd.env_remove("RUST_LOG")
+        .env_remove("AWS_PROFILE")
+        .env_remove("AWS_ENDPOINT_URL")
+        .env_remove("AWS_ENDPOINT_URL_S3");
+    cmd
+}
+
 // === e2e_test-gated SDK helpers ===
 
 // Re-exported for use by tests/e2e_*.rs files. Test crates that don't

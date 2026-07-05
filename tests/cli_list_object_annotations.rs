@@ -1,5 +1,9 @@
 //! Process-level CLI tests for the `list-object-annotations` subcommand.
-//! These run without AWS credentials or network access.
+//! These run without AWS credentials or network access (mock-endpoint
+//! tests talk only to a loopback HTTP server).
+
+mod common;
+use common::{MockResponse, MockS3Server, mock_target_args, s7cmd_cmd_clean_env};
 
 use std::process::{Command, Stdio};
 
@@ -91,3 +95,26 @@ fn help_mentions_annotation_prefix_and_target_version_id() {
 }
 // NOTE: read-only --dry-run non-exposure coverage for get-/list-object-annotation
 // lives centrally in tests/cli_dry_run.rs, matching the other read-only subcommands.
+
+#[test]
+fn mock_endpoint_no_such_version_exits_4_with_version_in_message() {
+    let server = MockS3Server::start(vec![MockResponse::s3_error(404, "NoSuchVersion")]);
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.args([
+        "list-object-annotations",
+        "--target-version-id",
+        "mock-version",
+    ])
+    .args(mock_target_args(&server.endpoint_url()))
+    .arg("s3://mock-bucket/mock-key");
+    let (code, _stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(
+        code,
+        Some(4),
+        "NoSuchVersion should exit 4; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("s3://mock-bucket/mock-key (versionId=mock-version) not found"),
+        "expected the versioned not-found message; got: {stderr}"
+    );
+}

@@ -1,5 +1,9 @@
 //! Process-level CLI tests for the `get-bucket-replication` subcommand.
-//! These run without AWS credentials or network access.
+//! These run without AWS credentials or network access (the mock-endpoint
+//! test talks only to a loopback HTTP server).
+
+mod common;
+use common::{MockResponse, MockS3Server, mock_target_args, s7cmd_cmd_clean_env};
 
 use std::process::{Command, Stdio};
 
@@ -61,6 +65,45 @@ fn bucket_with_key_exits_1() {
     assert!(
         !stderr.is_empty(),
         "should have an error message on stderr; got empty"
+    );
+}
+
+#[test]
+fn mock_endpoint_success_prints_replication_json() {
+    let server = MockS3Server::start(vec![MockResponse::new(
+        200,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+         <ReplicationConfiguration>\
+           <Role>arn:aws:iam::123456789012:role/replication</Role>\
+           <Rule>\
+             <ID>rule-1</ID>\
+             <Status>Enabled</Status>\
+             <Prefix></Prefix>\
+             <Destination><Bucket>arn:aws:s3:::dest-bucket</Bucket></Destination>\
+           </Rule>\
+         </ReplicationConfiguration>",
+    )]);
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.arg("get-bucket-replication")
+        .args(mock_target_args(&server.endpoint_url()))
+        .arg("s3://mock-bucket");
+    let (code, stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(code, Some(0), "expected success; stderr: {stderr}");
+    assert!(
+        stdout.contains("\"Role\": \"arn:aws:iam::123456789012:role/replication\""),
+        "stdout should contain the pretty-printed Role; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"Rules\""),
+        "stdout should contain the Rules array; got: {stdout}"
+    );
+    assert!(
+        server
+            .requests()
+            .iter()
+            .any(|r| r.starts_with("GET ") && r.contains("replication")),
+        "expected a GetBucketReplication request; got: {:?}",
+        server.requests()
     );
 }
 

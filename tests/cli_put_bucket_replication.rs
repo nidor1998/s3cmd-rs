@@ -1,5 +1,9 @@
 //! Process-level CLI tests for the `put-bucket-replication` subcommand.
-//! These run without AWS credentials or network access.
+//! These run without AWS credentials or network access (mock-endpoint
+//! tests talk only to a loopback HTTP server).
+
+mod common;
+use common::{MockResponse, MockS3Server, mock_target_args, s7cmd_cmd_clean_env};
 
 use std::process::{Command, Stdio};
 
@@ -166,5 +170,34 @@ fn bucket_with_key_exits_1() {
     assert!(
         !stderr.is_empty(),
         "should have an error message on stderr; got empty"
+    );
+}
+
+#[test]
+fn mock_endpoint_put_replication_succeeds() {
+    let config = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        config.path(),
+        r#"{"Role":"arn:aws:iam::123456789012:role/replication","Rules":[{"ID":"rule-1","Status":"Enabled","Destination":{"Bucket":"arn:aws:s3:::dest-bucket"}}]}"#,
+    )
+    .unwrap();
+    let server = MockS3Server::start(vec![MockResponse::new(200, "")]);
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.args(["put-bucket-replication", "-v"])
+        .args(mock_target_args(&server.endpoint_url()))
+        .args(["s3://mock-bucket", config.path().to_str().unwrap()]);
+    let (code, _stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(code, Some(0), "expected success; stderr: {stderr}");
+    assert!(
+        stderr.contains("Bucket replication set."),
+        "expected the success info line (-v); got: {stderr}"
+    );
+    assert!(
+        server
+            .requests()
+            .iter()
+            .any(|r| r.starts_with("PUT ") && r.contains("replication")),
+        "expected a PutBucketReplication request; got: {:?}",
+        server.requests()
     );
 }

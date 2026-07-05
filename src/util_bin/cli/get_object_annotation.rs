@@ -1,6 +1,8 @@
 // Vendored from s3util-rs@1.6.0
 //   src/bin/s3util/cli/get_object_annotation.rs
-// Adjustments: none — the upstream file already targets `super::ExitStatus`.
+// Adjustments: added the verify_saved_file_err_when_file_unreadable unit
+//              test; otherwise none — the upstream file already targets
+//              `super::ExitStatus`.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -591,6 +593,20 @@ mod tests {
             "k",
         );
         assert!(res.is_ok(), "expected ok, got: {res:?}");
+    }
+
+    #[test]
+    fn verify_saved_file_err_when_file_unreadable() {
+        // The temp file vanished (or is unreadable) between write and verify:
+        // the re-read itself fails and the error names the file being verified.
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("never-written.bin");
+        let err = verify_saved_file(&missing, None, None, None, None, "b", "k").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("re-reading the freshly-written temp file"),
+            "got: {msg}"
+        );
     }
 
     #[test]

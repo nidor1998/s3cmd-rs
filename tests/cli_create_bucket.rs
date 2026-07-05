@@ -1,5 +1,9 @@
 //! Process-level CLI tests for the `create-bucket` subcommand.
-//! These run without AWS credentials or network access.
+//! These run without AWS credentials or network access (mock-endpoint
+//! tests talk only to a loopback HTTP server).
+
+mod common;
+use common::{MockResponse, MockS3Server, mock_target_args, s7cmd_cmd_clean_env};
 
 use std::process::{Command, Stdio};
 
@@ -106,5 +110,70 @@ fn target_no_sign_request_conflicts_with_target_profile() {
         stderr.to_lowercase().contains("cannot be used")
             || stderr.to_lowercase().contains("conflict"),
         "expected clap conflict message; got: {stderr}"
+    );
+}
+
+#[test]
+fn mock_endpoint_if_not_exists_dry_run_skips_existing_bucket() {
+    // HeadBucket → 200 (bucket exists) → --dry-run reports the would-skip.
+    let server = MockS3Server::start(vec![MockResponse::new(200, "")]);
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.args(["create-bucket", "--if-not-exists", "--dry-run"])
+        .args(mock_target_args(&server.endpoint_url()))
+        .arg("s3://mock-bucket");
+    let (code, _stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(code, Some(0), "expected success; stderr: {stderr}");
+    assert!(
+        stderr.contains("[dry-run] would skip: bucket exists."),
+        "expected the dry-run skip line; got: {stderr}"
+    );
+}
+
+#[test]
+fn mock_endpoint_if_not_exists_head_failure_exits_1() {
+    // HeadBucket → 403 (not a 404) → HeadError::Other bubbles up as an error.
+    let server = MockS3Server::start(vec![MockResponse::s3_error(403, "AccessDenied")]);
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.args(["create-bucket", "--if-not-exists"])
+        .args(mock_target_args(&server.endpoint_url()))
+        .arg("s3://mock-bucket");
+    let (code, _stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(
+        code,
+        Some(1),
+        "non-404 HeadBucket failure should exit 1; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("head-bucket on s3://mock-bucket"),
+        "expected the head-bucket error context; got: {stderr}"
+    );
+}
+
+#[test]
+fn mock_endpoint_tagging_failure_after_create_warns_exit_3() {
+    // CreateBucket → 200, then PutBucketTagging → 403: the bucket exists
+    // untagged, so the run must exit 3 (warning), not 0 and not 1.
+    let server = MockS3Server::start(vec![
+        MockResponse::new(200, ""),
+        MockResponse::s3_error(403, "AccessDenied"),
+    ]);
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.args(["create-bucket", "--tagging", "team=mock"])
+        .args(mock_target_args(&server.endpoint_url()))
+        .arg("s3://mock-bucket");
+    let (code, _stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(
+        code,
+        Some(3),
+        "tagging failure after create should exit 3; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("was created but PutBucketTagging failed"),
+        "expected the partial-state warning; got: {stderr}"
+    );
+    let requests = server.requests();
+    assert!(
+        requests.iter().any(|r| r.contains("tagging")),
+        "expected a PutBucketTagging request after CreateBucket; got: {requests:?}"
     );
 }

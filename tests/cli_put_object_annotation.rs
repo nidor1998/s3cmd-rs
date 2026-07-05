@@ -1,5 +1,9 @@
 //! Process-level CLI tests for the `put-object-annotation` subcommand.
-//! These run without AWS credentials or network access.
+//! These run without AWS credentials or network access (mock-endpoint
+//! tests talk only to a loopback HTTP server).
+
+mod common;
+use common::{MockResponse, MockS3Server, mock_target_args, s7cmd_cmd_clean_env};
 
 use std::process::{Command, Stdio};
 
@@ -142,3 +146,99 @@ fn help_mentions_annotation_options_and_target_version_id() {
 }
 // NOTE: --dry-run smoke + help-exposure coverage for put-/delete-object-annotation
 // lives centrally in tests/cli_dry_run.rs, matching the other mutating subcommands.
+
+// ---------- stdin payload and mock-endpoint tests ----------
+
+#[test]
+fn stdin_payload_dry_run_exits_0() {
+    // `--annotation-payload -` reads the payload from stdin; --dry-run
+    // validates it and short-circuits before any network call.
+    use std::io::Write;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_s7cmd"))
+        .args([
+            "put-object-annotation",
+            "--dry-run",
+            "--annotation-name",
+            "note",
+            "--annotation-payload",
+            "-",
+            "s3://mock-bucket/mock-key",
+        ])
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn s7cmd binary");
+    child
+        .stdin
+        .take()
+        .expect("child stdin")
+        .write_all(b"annotation payload via stdin")
+        .expect("write payload to child stdin");
+    let output = child.wait_with_output().expect("wait for s7cmd");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stdin payload dry-run should exit 0; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("[dry-run] would put object annotation."),
+        "expected the dry-run line; got: {stderr}"
+    );
+}
+
+fn put_annotation_cmd(server: &MockS3Server, payload: &std::path::Path, extra: &[&str]) -> Command {
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.args([
+        "put-object-annotation",
+        "--annotation-name",
+        "note",
+        "--annotation-payload",
+        payload.to_str().unwrap(),
+    ])
+    .args(extra)
+    .args(mock_target_args(&server.endpoint_url()))
+    .arg("s3://mock-bucket/mock-key");
+    cmd
+}
+
+#[test]
+fn mock_endpoint_no_such_version_exits_4_with_version_in_message() {
+    let payload = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(payload.path(), b"mock payload").unwrap();
+    let server = MockS3Server::start(vec![MockResponse::s3_error(404, "NoSuchVersion")]);
+    let (code, _stdout, stderr) = common::run(&mut put_annotation_cmd(
+        &server,
+        payload.path(),
+        &["--target-version-id", "mock-version"],
+    ));
+    assert_eq!(
+        code,
+        Some(4),
+        "NoSuchVersion should exit 4; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("s3://mock-bucket/mock-key (versionId=mock-version) not found"),
+        "expected the versioned not-found message; got: {stderr}"
+    );
+}
+
+#[test]
+fn mock_endpoint_access_denied_exits_1() {
+    let payload = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(payload.path(), b"mock payload").unwrap();
+    let server = MockS3Server::start(vec![MockResponse::s3_error(403, "AccessDenied")]);
+    let (code, _stdout, stderr) =
+        common::run(&mut put_annotation_cmd(&server, payload.path(), &[]));
+    assert_eq!(
+        code,
+        Some(1),
+        "unclassified S3 errors should exit 1; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("AccessDenied"),
+        "expected the AccessDenied error chain; got: {stderr}"
+    );
+}

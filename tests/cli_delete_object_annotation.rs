@@ -1,5 +1,9 @@
 //! Process-level CLI tests for the `delete-object-annotation` subcommand.
-//! These run without AWS credentials or network access.
+//! These run without AWS credentials or network access (mock-endpoint
+//! tests talk only to a loopback HTTP server).
+
+mod common;
+use common::{MockResponse, MockS3Server, mock_target_args, s7cmd_cmd_clean_env};
 
 use std::process::{Command, Stdio};
 
@@ -112,3 +116,93 @@ fn help_mentions_annotation_name_and_target_version_id() {
 }
 // NOTE: --dry-run smoke + help-exposure coverage for put-/delete-object-annotation
 // lives centrally in tests/cli_dry_run.rs, matching the other mutating subcommands.
+
+// ---------- mock-endpoint tests: one per error-classification arm ----------
+
+fn delete_annotation_cmd(server: &MockS3Server, extra: &[&str]) -> Command {
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.args(["delete-object-annotation", "--annotation-name", "note"])
+        .args(extra)
+        .args(mock_target_args(&server.endpoint_url()))
+        .arg("s3://mock-bucket/mock-key");
+    cmd
+}
+
+#[test]
+fn mock_endpoint_no_such_key_exits_4() {
+    let server = MockS3Server::start(vec![MockResponse::s3_error(404, "NoSuchKey")]);
+    let (code, _stdout, stderr) = common::run(&mut delete_annotation_cmd(&server, &[]));
+    assert_eq!(code, Some(4), "NoSuchKey should exit 4; stderr: {stderr}");
+    assert!(
+        stderr.contains("object s3://mock-bucket/mock-key not found"),
+        "expected the unversioned not-found message; got: {stderr}"
+    );
+}
+
+#[test]
+fn mock_endpoint_no_such_version_exits_4_with_version_in_message() {
+    let server = MockS3Server::start(vec![MockResponse::s3_error(404, "NoSuchVersion")]);
+    let (code, _stdout, stderr) = common::run(&mut delete_annotation_cmd(
+        &server,
+        &["--target-version-id", "mock-version"],
+    ));
+    assert_eq!(
+        code,
+        Some(4),
+        "NoSuchVersion should exit 4; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("s3://mock-bucket/mock-key (versionId=mock-version) not found"),
+        "expected the versioned not-found message; got: {stderr}"
+    );
+}
+
+#[test]
+fn mock_endpoint_no_such_annotation_exits_4() {
+    let server = MockS3Server::start(vec![MockResponse::s3_error(404, "NoSuchAnnotation")]);
+    let (code, _stdout, stderr) = common::run(&mut delete_annotation_cmd(&server, &[]));
+    assert_eq!(
+        code,
+        Some(4),
+        "NoSuchAnnotation should exit 4; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("annotation note not found for s3://mock-bucket/mock-key"),
+        "expected the annotation-not-found message; got: {stderr}"
+    );
+}
+
+#[test]
+fn mock_endpoint_no_such_annotation_with_version_exits_4() {
+    let server = MockS3Server::start(vec![MockResponse::s3_error(404, "NoSuchAnnotation")]);
+    let (code, _stdout, stderr) = common::run(&mut delete_annotation_cmd(
+        &server,
+        &["--target-version-id", "mock-version"],
+    ));
+    assert_eq!(
+        code,
+        Some(4),
+        "NoSuchAnnotation should exit 4; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "annotation note not found for s3://mock-bucket/mock-key (versionId=mock-version)"
+        ),
+        "expected the versioned annotation-not-found message; got: {stderr}"
+    );
+}
+
+#[test]
+fn mock_endpoint_access_denied_exits_1() {
+    let server = MockS3Server::start(vec![MockResponse::s3_error(403, "AccessDenied")]);
+    let (code, _stdout, stderr) = common::run(&mut delete_annotation_cmd(&server, &[]));
+    assert_eq!(
+        code,
+        Some(1),
+        "unclassified S3 errors should exit 1; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("AccessDenied"),
+        "expected the AccessDenied error chain; got: {stderr}"
+    );
+}

@@ -236,3 +236,33 @@ fn rename_empty_target_if_none_match_exits_2() {
         .failure()
         .code(2);
 }
+
+mod common;
+
+#[test]
+fn mock_endpoint_no_such_bucket_exits_1_with_message() {
+    // RenameObject → 404 NoSuchBucket: unlike the get-* subcommands, rename
+    // maps BucketNotFound to a hard error (exit 1), not exit 4.
+    let server =
+        common::MockS3Server::start(vec![common::MockResponse::s3_error(404, "NoSuchBucket")]);
+    let mut cmd = common::s7cmd_cmd_clean_env();
+    // Directory-bucket ops default to S3 Express CreateSession auth; disable
+    // it so the canned 404 reaches RenameObject as a plain service error.
+    cmd.env("AWS_S3_DISABLE_EXPRESS_SESSION_AUTH", "true");
+    cmd.arg("rename")
+        .args(common::mock_source_args(&server.endpoint_url()))
+        .args([
+            "s3://fake-bucket--apne1-az4--x-s3/src-key",
+            "s3://fake-bucket--apne1-az4--x-s3/dst-key",
+        ]);
+    let (code, _stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(
+        code,
+        Some(1),
+        "NoSuchBucket on rename should exit 1; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("bucket s3://fake-bucket--apne1-az4--x-s3 not found"),
+        "expected the bucket-not-found message; got: {stderr}"
+    );
+}
