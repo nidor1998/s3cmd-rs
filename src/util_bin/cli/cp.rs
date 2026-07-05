@@ -153,6 +153,10 @@ mod tests {
             no_fail_on_verify_error: false,
             skip_existing,
             dry_run: false,
+            // Added in s3util-rs 1.6.0: object-annotation sync toggles for
+            // cp/mv. Off by default, matching the upstream test fixture.
+            enable_sync_object_annotations: false,
+            disable_check_annotation_etag: false,
         }
     }
 

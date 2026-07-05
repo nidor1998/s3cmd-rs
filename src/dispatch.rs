@@ -193,6 +193,55 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
             unit_to_exit(util_bin::cli::run_delete_object_tagging(args, client_config).await)
         }
 
+        // Object annotations. Unlike the tagging put/delete runners (which
+        // return `()`), all four annotation runners return an `ExitStatus`
+        // (they surface NotFound as exit 4), so every arm uses status_to_exit.
+        //
+        // The runners embed large SDK operation futures (and, for get, the
+        // buffered payload + integrity-check machinery); like Cp/Mv/Sync
+        // above, `Box::pin` moves them to the heap so dispatch's per-arm frame
+        // stays small enough for the ~2 MB test-thread stacks used in CI.
+        Cmd::GetObjectAnnotation(args) => {
+            let client_config = args.common.build_client_config();
+            status_to_exit(
+                Box::pin(util_bin::cli::run_get_object_annotation(
+                    args,
+                    client_config,
+                ))
+                .await,
+            )
+        }
+        Cmd::PutObjectAnnotation(args) => {
+            let client_config = args.common.build_client_config();
+            status_to_exit(
+                Box::pin(util_bin::cli::run_put_object_annotation(
+                    args,
+                    client_config,
+                ))
+                .await,
+            )
+        }
+        Cmd::DeleteObjectAnnotation(args) => {
+            let client_config = args.common.build_client_config();
+            status_to_exit(
+                Box::pin(util_bin::cli::run_delete_object_annotation(
+                    args,
+                    client_config,
+                ))
+                .await,
+            )
+        }
+        Cmd::ListObjectAnnotations(args) => {
+            let client_config = args.common.build_client_config();
+            status_to_exit(
+                Box::pin(util_bin::cli::run_list_object_annotations(
+                    args,
+                    client_config,
+                ))
+                .await,
+            )
+        }
+
         Cmd::GetBucketTagging(args) => {
             let client_config = args.common.build_client_config();
             status_to_exit(util_bin::cli::run_get_bucket_tagging(args, client_config).await)
@@ -582,6 +631,82 @@ mod tests {
         ]);
         let code = dispatch(cmd).await;
         assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn dispatch_put_object_annotation_dry_run_succeeds() {
+        // put-object-annotation reads the payload file before the dry-run
+        // short-circuit, so seed a real temp file.
+        let tmp = std::env::temp_dir().join(format!(
+            "s7cmd_dispatch_annotation_{}.bin",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&tmp, b"payload").unwrap();
+        let cmd = cmd_from(&[
+            "s7cmd",
+            "put-object-annotation",
+            "--dry-run",
+            "--annotation-name",
+            "note",
+            "--annotation-payload",
+            tmp.to_str().unwrap(),
+            &format!("{FAKE_BUCKET}/key"),
+        ]);
+        let code = dispatch(cmd).await;
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn dispatch_delete_object_annotation_dry_run_succeeds() {
+        let cmd = cmd_from(&[
+            "s7cmd",
+            "delete-object-annotation",
+            "--dry-run",
+            "--annotation-name",
+            "note",
+            &format!("{FAKE_BUCKET}/key"),
+        ]);
+        let code = dispatch(cmd).await;
+        assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn dispatch_get_object_annotation_against_fake_endpoint_returns_error() {
+        let out = std::env::temp_dir().join(format!(
+            "s7cmd_dispatch_annotation_out_{}.bin",
+            uuid::Uuid::new_v4()
+        ));
+        let cmd = cmd_from(&[
+            "s7cmd",
+            "get-object-annotation",
+            "--target-endpoint-url",
+            FAKE_ENDPOINT,
+            "--target-region",
+            "us-east-1",
+            "--annotation-name",
+            "note",
+            &format!("{FAKE_BUCKET}/key"),
+            out.to_str().unwrap(),
+        ]);
+        let code = dispatch(cmd).await;
+        let _ = std::fs::remove_file(&out);
+        assert_ne!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn dispatch_list_object_annotations_against_fake_endpoint_returns_error() {
+        let cmd = cmd_from(&[
+            "s7cmd",
+            "list-object-annotations",
+            "--target-endpoint-url",
+            FAKE_ENDPOINT,
+            "--target-region",
+            "us-east-1",
+            &format!("{FAKE_BUCKET}/key"),
+        ]);
+        let code = dispatch(cmd).await;
+        assert_ne!(code, 0);
     }
 
     #[tokio::test]

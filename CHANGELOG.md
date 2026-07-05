@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-07-05
+
+Adds S3 object-annotation support.
+
+### Added
+
+#### s3util-rs
+
+- `get-object-annotation`, `put-object-annotation`, `delete-object-annotation`, and `list-object-annotations`
+  subcommands: download, attach, delete, and list named annotation payloads on an S3 object.
+  `put-object-annotation` sends a Content-MD5 and an explicit CRC64NVME and verifies the value S3 returns;
+  `get-object-annotation` verifies content length, the AES256 ETag/MD5, and any additional checksum, then writes the
+  payload to a file (atomic rename, re-verified on disk) or to stdout. All four surface a missing bucket, object,
+  version, or annotation as exit code 4.
+- `cp`/`mv` gain object-annotation sync options (`--enable-sync-object-annotations`, `--disable-check-annotation-etag`).
+
+#### s3sync
+
+- `sync` gains object-annotation options `--enable-sync-object-annotations`, `--disable-check-annotation-etag`,
+  `--sync-latest-object-annotations`, and `--report-annotations-sync-status`. These flow through automatically from the
+  updated s3sync dependency; the `--report-sync-status` summary now also reports annotation match/mismatch counts.
+
+### Changed
+
+- s3sync `v1.58.9 -> v1.59.0`
+- s3util-rs `v1.5.3 -> v1.6.0`
+- Updated other dependencies
+
+### Underlying libraries
+
+```toml
+s3sync = "=1.59.0"
+s3util-rs = "=1.6.0"
+s3rm-rs = "=1.3.8"
+s3ls-rs = "=1.0.3"
+```
+
 ## [1.3.1] - 2026-06-27
 
 Monthly update.

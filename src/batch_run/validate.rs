@@ -52,6 +52,10 @@ fn reject_per_line_stdin_config(_line_no: usize, _raw: &str, cmd: &Cmd) -> Resul
         Cmd::PutBucketLogging(a) => a.bucket_logging_status.as_deref(),
         Cmd::PutBucketNotificationConfiguration(a) => a.notification_configuration.as_deref(),
         Cmd::PutBucketReplication(a) => a.replication_configuration.as_deref(),
+        // put-object-annotation reads its payload from `--annotation-payload -`
+        // (stdin), which clashes with batch-run's script reader — same rule as
+        // the put-bucket-* config bodies above.
+        Cmd::PutObjectAnnotation(a) => a.annotation_payload.as_deref(),
         _ => return Ok(()),
     };
     if stdin_arg == Some("-") {
@@ -141,6 +145,10 @@ fn reject_per_line_tracing(_line_no: usize, _raw: &str, cmd: &Cmd) -> Result<()>
         Cmd::GetObjectTagging(a) => check_common!(a.common),
         Cmd::PutObjectTagging(a) => check_common!(a.common),
         Cmd::DeleteObjectTagging(a) => check_common!(a.common),
+        Cmd::GetObjectAnnotation(a) => check_common!(a.common),
+        Cmd::PutObjectAnnotation(a) => check_common!(a.common),
+        Cmd::DeleteObjectAnnotation(a) => check_common!(a.common),
+        Cmd::ListObjectAnnotations(a) => check_common!(a.common),
         Cmd::GetBucketTagging(a) => check_common!(a.common),
         Cmd::PutBucketTagging(a) => check_common!(a.common),
         Cmd::DeleteBucketTagging(a) => check_common!(a.common),
@@ -304,6 +312,56 @@ mod tests {
         // A regular file path positional must still pass validation.
         let cmd = parse_cmd(&["s7cmd", "put-bucket-policy", "s3://b", "/tmp/policy.json"]);
         validate(1, "put-bucket-policy s3://b /tmp/policy.json", &cmd).unwrap();
+    }
+
+    #[test]
+    fn rejects_put_object_annotation_reading_stdin_dash() {
+        // put-object-annotation reads its payload from stdin when
+        // --annotation-payload is `-`, clashing with batch-run's script reader.
+        assert_rejects_stdin_dash(&[
+            "s7cmd",
+            "put-object-annotation",
+            "s3://b/k",
+            "--annotation-name",
+            "note",
+            "--annotation-payload",
+            "-",
+        ]);
+    }
+
+    #[test]
+    fn allows_put_object_annotation_with_file_payload() {
+        // A regular file-path payload must still pass validation.
+        let cmd = parse_cmd(&[
+            "s7cmd",
+            "put-object-annotation",
+            "s3://b/k",
+            "--annotation-name",
+            "note",
+            "--annotation-payload",
+            "/tmp/payload.bin",
+        ]);
+        validate(1, "put-object-annotation ...", &cmd).unwrap();
+    }
+
+    #[test]
+    fn allows_get_object_annotation_to_stdout_dash() {
+        // The get-object-annotation outfile `-` writes to *stdout* (not read
+        // from stdin), so it does not clash with batch-run's script reader.
+        let cmd = parse_cmd(&[
+            "s7cmd",
+            "get-object-annotation",
+            "s3://b/k",
+            "-",
+            "--annotation-name",
+            "note",
+        ]);
+        validate(
+            1,
+            "get-object-annotation s3://b/k - --annotation-name note",
+            &cmd,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -570,5 +628,52 @@ mod tests {
         for sub in put_with_file {
             assert_rejects_tracing(&["s7cmd", sub, "--json-tracing", "s3://b", "/dev/null"]);
         }
+    }
+
+    /// Object-annotation subcommands each have a distinct required-arg shape,
+    /// so they are exercised here rather than in the loops above. All four
+    /// flatten `CommonClientArgs`, so `--json-tracing` must be rejected.
+    #[test]
+    fn rejects_per_line_tracing_for_annotation_variants() {
+        // list-object-annotations: target only.
+        assert_rejects_tracing(&[
+            "s7cmd",
+            "list-object-annotations",
+            "--json-tracing",
+            "s3://b/k",
+        ]);
+        // delete-object-annotation: target + --annotation-name.
+        assert_rejects_tracing(&[
+            "s7cmd",
+            "delete-object-annotation",
+            "--json-tracing",
+            "s3://b/k",
+            "--annotation-name",
+            "note",
+        ]);
+        // get-object-annotation: target + outfile + --annotation-name. Outfile
+        // `-` (stdout) is allowed inside batch-run, so it does not trip the
+        // stdin rule that runs before the tracing check.
+        assert_rejects_tracing(&[
+            "s7cmd",
+            "get-object-annotation",
+            "--json-tracing",
+            "s3://b/k",
+            "-",
+            "--annotation-name",
+            "note",
+        ]);
+        // put-object-annotation: use a non-dash payload path so the stdin rule
+        // (which runs before the tracing rule) does not fire first.
+        assert_rejects_tracing(&[
+            "s7cmd",
+            "put-object-annotation",
+            "--json-tracing",
+            "--annotation-name",
+            "note",
+            "--annotation-payload",
+            "/dev/null",
+            "s3://b/k",
+        ]);
     }
 }

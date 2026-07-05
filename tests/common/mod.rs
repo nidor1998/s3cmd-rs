@@ -92,6 +92,7 @@ mod e2e {
     use aws_sdk_s3::config::Region;
     use aws_sdk_s3::operation::get_object_tagging::GetObjectTaggingOutput;
     use aws_sdk_s3::operation::head_object::HeadObjectOutput;
+    use aws_sdk_s3::primitives::ByteStream;
     use aws_sdk_s3::types::{
         BucketInfo, BucketLocationConstraint, BucketType, BucketVersioningStatus,
         CreateBucketConfiguration, DataRedundancy, LocationInfo, LocationType, Tag, Tagging,
@@ -363,6 +364,78 @@ mod e2e {
                 .send()
                 .await
                 .expect("put_object_tagging");
+        }
+
+        /// Attach an annotation to an object via the raw SDK, so
+        /// get-/list-/delete-object-annotation tests have state to read. The
+        /// SDK adds a default (CRC32) request checksum automatically, so no
+        /// explicit checksum/Content-MD5 is needed here.
+        pub async fn put_object_annotation(
+            &self,
+            bucket: &str,
+            key: &str,
+            version_id: Option<String>,
+            annotation_name: &str,
+            payload: &[u8],
+        ) {
+            self.client
+                .put_object_annotation()
+                .bucket(bucket)
+                .key(key)
+                .set_version_id(version_id)
+                .annotation_name(annotation_name)
+                .annotation_payload(ByteStream::from(payload.to_vec()))
+                .send()
+                .await
+                .expect("put_object_annotation");
+        }
+
+        /// Fetch an annotation's payload bytes. Used to verify a
+        /// put-object-annotation round-trip landed the expected bytes.
+        pub async fn get_object_annotation_payload(
+            &self,
+            bucket: &str,
+            key: &str,
+            version_id: Option<String>,
+            annotation_name: &str,
+        ) -> Vec<u8> {
+            let out = self
+                .client
+                .get_object_annotation()
+                .bucket(bucket)
+                .key(key)
+                .set_version_id(version_id)
+                .annotation_name(annotation_name)
+                .send()
+                .await
+                .expect("get_object_annotation");
+            out.annotation_payload
+                .collect()
+                .await
+                .expect("collect annotation payload")
+                .into_bytes()
+                .to_vec()
+        }
+
+        /// Whether an annotation with the given name exists on the object.
+        /// Any error (including `NoSuchAnnotation`) maps to `false` — used to
+        /// confirm delete-object-annotation removed the annotation.
+        pub async fn is_object_annotation_exist(
+            &self,
+            bucket: &str,
+            key: &str,
+            version_id: Option<String>,
+            annotation_name: &str,
+        ) -> bool {
+            self.client
+                .get_object_annotation()
+                .bucket(bucket)
+                .key(key)
+                .set_version_id(version_id)
+                .annotation_name(annotation_name)
+                .send()
+                .await
+                .is_ok()
         }
 
         pub async fn put_bucket_tagging(&self, bucket: &str, tags: &[(&str, &str)]) {

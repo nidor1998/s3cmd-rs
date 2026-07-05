@@ -2944,9 +2944,9 @@ dependencies = [
 
 [[package]]
 name = "s3sync"
-version = "1.58.9"
+version = "1.59.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f108aef7efa8c0982cf2c43553943ad991069eee5925ecf25f02482b58a8b57"
+checksum = "84daeb9f5d124ebf2c9b6aed339e1d78e48e8ae8ba30b289c507a05363c510f9"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3006,9 +3006,9 @@ dependencies = [
 
 [[package]]
 name = "s3util-rs"
-version = "1.5.3"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9254cf4abea7a6739bdfc144eadd4e433e932800953dbc7400aaa11ea7df175"
+checksum = "bc297f58d1637860fd571944665ab38ad72273e2e99f3c65e600608c544ab964"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3065,7 +3065,7 @@ dependencies = [
 
 [[package]]
 name = "s7cmd"
-version = "1.3.1"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -3084,6 +3084,7 @@ dependencies = [
  "indicatif",
  "leaky-bucket",
  "log",
+ "md5",
  "nix",
  "predicates",
  "s3ls-rs",

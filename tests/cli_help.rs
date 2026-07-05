@@ -135,6 +135,38 @@ fn delete_object_tagging_help_works() {
         .success();
 }
 #[test]
+fn get_object_annotation_help_works() {
+    Command::cargo_bin("s7cmd")
+        .unwrap()
+        .args(["get-object-annotation", "--help"])
+        .assert()
+        .success();
+}
+#[test]
+fn put_object_annotation_help_works() {
+    Command::cargo_bin("s7cmd")
+        .unwrap()
+        .args(["put-object-annotation", "--help"])
+        .assert()
+        .success();
+}
+#[test]
+fn delete_object_annotation_help_works() {
+    Command::cargo_bin("s7cmd")
+        .unwrap()
+        .args(["delete-object-annotation", "--help"])
+        .assert()
+        .success();
+}
+#[test]
+fn list_object_annotations_help_works() {
+    Command::cargo_bin("s7cmd")
+        .unwrap()
+        .args(["list-object-annotations", "--help"])
+        .assert()
+        .success();
+}
+#[test]
 fn get_bucket_tagging_help_works() {
     Command::cargo_bin("s7cmd")
         .unwrap()
@@ -485,6 +517,19 @@ fn top_level_help_lists_v1_4_subcommands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("presign"));
+}
+
+#[test]
+fn top_level_help_lists_annotation_subcommands() {
+    Command::cargo_bin("s7cmd")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("get-object-annotation"))
+        .stdout(predicate::str::contains("put-object-annotation"))
+        .stdout(predicate::str::contains("delete-object-annotation"))
+        .stdout(predicate::str::contains("list-object-annotations"));
 }
 
 #[test]

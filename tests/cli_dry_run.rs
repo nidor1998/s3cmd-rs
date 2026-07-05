@@ -624,6 +624,76 @@ fn restore_object_dry_run_with_version_id_includes_version_field() {
     );
 }
 
+// object annotation (s3util-rs 1.6.0) — put/delete are mutating
+
+#[test]
+fn put_object_annotation_dry_run_smoke() {
+    // put-object-annotation reads the payload file before the dry-run
+    // short-circuit, so seed a real file with the payload bytes.
+    let payload = write_json("annotation payload");
+    let (ok, _, stderr, code) = run(s7cmd().args([
+        "put-object-annotation",
+        "--dry-run",
+        "--annotation-name",
+        "note",
+        "--annotation-payload",
+        payload.path().to_str().unwrap(),
+        FAKE_OBJECT,
+    ]));
+    assert_dry_run(&stderr, ok, code, "would put object annotation");
+}
+
+#[test]
+fn put_object_annotation_dry_run_with_version_id_includes_version_field() {
+    let payload = write_json("annotation payload");
+    let (ok, _, stderr, code) = run(s7cmd().args([
+        "put-object-annotation",
+        "--dry-run",
+        "--annotation-name",
+        "note",
+        "--annotation-payload",
+        payload.path().to_str().unwrap(),
+        "--target-version-id",
+        "ver1",
+        FAKE_OBJECT,
+    ]));
+    assert_dry_run(&stderr, ok, code, "would put object annotation");
+    assert!(
+        stderr.contains("ver1"),
+        "version_id should appear in dry-run log: {stderr}"
+    );
+}
+
+#[test]
+fn delete_object_annotation_dry_run_smoke() {
+    let (ok, _, stderr, code) = run(s7cmd().args([
+        "delete-object-annotation",
+        "--dry-run",
+        "--annotation-name",
+        "note",
+        FAKE_OBJECT,
+    ]));
+    assert_dry_run(&stderr, ok, code, "would delete object annotation");
+}
+
+#[test]
+fn delete_object_annotation_dry_run_with_version_id_includes_version_field() {
+    let (ok, _, stderr, code) = run(s7cmd().args([
+        "delete-object-annotation",
+        "--dry-run",
+        "--annotation-name",
+        "note",
+        "--target-version-id",
+        "abc123",
+        FAKE_OBJECT,
+    ]));
+    assert_dry_run(&stderr, ok, code, "would delete object annotation");
+    assert!(
+        stderr.contains("abc123"),
+        "version_id should appear in dry-run log: {stderr}"
+    );
+}
+
 // ---------- read-only commands must NOT expose --dry-run ----------
 
 #[test]
@@ -651,6 +721,26 @@ fn head_object_help_does_not_expose_dry_run() {
     let (ok, stdout, _stderr, _code) = run(s7cmd().args(["head-object", "--help"]));
     assert!(ok);
     assert!(!stdout.contains("--dry-run"));
+}
+
+#[test]
+fn get_object_annotation_help_does_not_expose_dry_run() {
+    let (ok, stdout, _stderr, _code) = run(s7cmd().args(["get-object-annotation", "--help"]));
+    assert!(ok);
+    assert!(
+        !stdout.contains("--dry-run"),
+        "read-only get-object-annotation must not expose --dry-run; help: {stdout}"
+    );
+}
+
+#[test]
+fn list_object_annotations_help_does_not_expose_dry_run() {
+    let (ok, stdout, _stderr, _code) = run(s7cmd().args(["list-object-annotations", "--help"]));
+    assert!(ok);
+    assert!(
+        !stdout.contains("--dry-run"),
+        "read-only list-object-annotations must not expose --dry-run; help: {stdout}"
+    );
 }
 
 // ---------- mutating commands DO expose --dry-run ----------
@@ -692,6 +782,20 @@ fn rm_help_lists_dry_run() {
 #[test]
 fn delete_bucket_help_lists_dry_run() {
     let (ok, stdout, _stderr, _code) = run(s7cmd().args(["delete-bucket", "--help"]));
+    assert!(ok);
+    assert!(stdout.contains("--dry-run"));
+}
+
+#[test]
+fn put_object_annotation_help_lists_dry_run() {
+    let (ok, stdout, _stderr, _code) = run(s7cmd().args(["put-object-annotation", "--help"]));
+    assert!(ok);
+    assert!(stdout.contains("--dry-run"));
+}
+
+#[test]
+fn delete_object_annotation_help_lists_dry_run() {
+    let (ok, stdout, _stderr, _code) = run(s7cmd().args(["delete-object-annotation", "--help"]));
     assert!(ok);
     assert!(stdout.contains("--dry-run"));
 }

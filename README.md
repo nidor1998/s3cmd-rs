@@ -74,6 +74,12 @@ Object Metadata:
   put-object-tagging                    Put tagging on an S3 object
   delete-object-tagging                 Delete tagging from an S3 object
 
+Object Annotation:
+  get-object-annotation                 Download a named annotation payload from an S3 object
+  put-object-annotation                 Attach a named annotation payload to an S3 object
+  delete-object-annotation              Delete a named annotation from an S3 object
+  list-object-annotations               List the annotations of an S3 object and print them as JSON
+
 Bucket Operations:
   create-bucket                         Create an S3 bucket
   delete-bucket                         Delete an S3 bucket

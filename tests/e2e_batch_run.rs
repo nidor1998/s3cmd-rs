@@ -948,6 +948,9 @@ async fn batch_run_e2e_all_subcommands_via_file() {
     let website_p = shell_path(&website_path);
     let logging_p = shell_path(&logging_path);
     let notification_p = shell_path(&notification_path);
+    // Destination file for get-object-annotation (created by the script line).
+    let annotation_out = local_dir.join("annotation-out.bin");
+    let annotation_out_p = shell_path(&annotation_out);
 
     // NOTE: `put-bucket-versioning --suspended` is intentionally placed
     // AFTER every DELETE-class object operation. On a Suspended bucket,
@@ -1001,6 +1004,10 @@ presign {auth_target} s3://{bucket}/object1
 put-object-tagging {auth_target} --tagging \"k=v\" s3://{bucket}/object1
 get-object-tagging {auth_target} s3://{bucket}/object1
 delete-object-tagging {auth_target} s3://{bucket}/object1
+put-object-annotation {auth_target} --annotation-name note --annotation-payload {payload_p} s3://{bucket}/object1
+get-object-annotation {auth_target} --annotation-name note s3://{bucket}/object1 {annotation_out_p}
+list-object-annotations {auth_target} s3://{bucket}/object1
+delete-object-annotation {auth_target} --annotation-name note s3://{bucket}/object1
 ls {auth_target} s3://{bucket}
 sync {auth_target} {sync_p} s3://{bucket}/synced/
 mv {auth_both} s3://{bucket}/object1 s3://{bucket}/object1-moved

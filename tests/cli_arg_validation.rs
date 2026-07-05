@@ -179,6 +179,42 @@ fn delete_object_tagging_no_args_exits_2() {
     assert!(!stderr.is_empty());
 }
 
+// ---- get-object-annotation ----
+
+#[test]
+fn get_object_annotation_no_args_exits_2() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd().arg("get-object-annotation"));
+    assert_eq!(code, Some(2));
+    assert!(!stderr.is_empty());
+}
+
+// ---- put-object-annotation ----
+
+#[test]
+fn put_object_annotation_no_args_exits_2() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd().arg("put-object-annotation"));
+    assert_eq!(code, Some(2));
+    assert!(!stderr.is_empty());
+}
+
+// ---- delete-object-annotation ----
+
+#[test]
+fn delete_object_annotation_no_args_exits_2() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd().arg("delete-object-annotation"));
+    assert_eq!(code, Some(2));
+    assert!(!stderr.is_empty());
+}
+
+// ---- list-object-annotations ----
+
+#[test]
+fn list_object_annotations_no_args_exits_2() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd().arg("list-object-annotations"));
+    assert_eq!(code, Some(2));
+    assert!(!stderr.is_empty());
+}
+
 // ---- create-bucket ----
 
 #[test]
