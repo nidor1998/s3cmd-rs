@@ -671,6 +671,7 @@ mod tests {
         assert_eq!(code, 0);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn dispatch_get_object_annotation_against_fake_endpoint_returns_error() {
         let out = std::env::temp_dir().join(format!(
