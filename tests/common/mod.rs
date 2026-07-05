@@ -343,7 +343,7 @@ pub fn s7cmd_cmd_clean_env() -> Command {
 // the false-positive locally.
 #[cfg(e2e_test)]
 #[allow(unused_imports)]
-pub use e2e::{EXPRESS_ONE_ZONE_AZ, REGION, TestHelper};
+pub use e2e::{EXPRESS_ONE_ZONE_AZ, REGION, TestHelper, wait_until_bucket_gone};
 
 #[cfg(e2e_test)]
 mod e2e {
@@ -369,6 +369,28 @@ mod e2e {
 
     /// Availability Zone ID used for Express One Zone directory bucket tests.
     pub const EXPRESS_ONE_ZONE_AZ: &str = "apne1-az4";
+
+    /// `DeleteBucket` is eventually consistent: `HeadBucket` can keep
+    /// reporting a just-deleted bucket for a short while, and a client whose
+    /// pooled connection (or cached bucket metadata) predates the deletion
+    /// can hold onto the stale answer even longer. Poll with a *fresh*
+    /// client per attempt until the bucket disappears or `timeout` elapses.
+    /// Returns `true` once the bucket is gone — assert on the return value
+    /// after a subprocess ran `delete-bucket` instead of a single-shot
+    /// `!is_bucket_exist(...)`, which flakes under the parallel e2e run.
+    pub async fn wait_until_bucket_gone(bucket: &str, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let helper = TestHelper::new().await;
+            if !helper.is_bucket_exist(bucket).await {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
 
     pub struct TestHelper {
         pub client: Client,
