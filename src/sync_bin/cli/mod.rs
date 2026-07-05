@@ -3,7 +3,9 @@
 // Adjustments: stripped #[cfg(test)] mod tests;
 //              run() now returns Result<i32> instead of calling
 //              std::process::exit (so it can be invoked from
-//              batch-run without killing the process mid-batch).
+//              batch-run without killing the process mid-batch);
+//              show_sync_report_summary() carries the annotation_matches /
+//              annotation_mismatch fields added in s3sync 1.59.0.
 
 use anyhow::{Result, anyhow};
 use s3sync::Config;
@@ -99,6 +101,9 @@ fn show_sync_report_summary(sync_stats_report: MutexGuard<'_, SyncStatsReport>) 
         tagging_mismatch = sync_stats_report.tagging_mismatch,
         etag_unknown = sync_stats_report.etag_unknown,
         checksum_unknown = sync_stats_report.checksum_unknown,
+        // Added in s3sync 1.59.0 (--report-annotations-sync-status).
+        annotation_matches = sync_stats_report.annotation_matches,
+        annotation_mismatch = sync_stats_report.annotation_mismatch,
     );
 }
 
@@ -155,6 +160,8 @@ mod tests {
             tagging_matches: 3,
             tagging_mismatch: 2,
             not_found: 1,
+            annotation_matches: 2,
+            annotation_mismatch: 1,
         };
         let report = Mutex::new(data);
         show_sync_report_summary(report.lock().unwrap());

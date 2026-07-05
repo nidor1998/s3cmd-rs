@@ -18,10 +18,11 @@ mod common;
 use assert_cmd::Command as AssertCommand;
 use common::{
     EXPRESS_ONE_ZONE_AZ, REGION, TestHelper, create_temp_dir, create_test_file,
-    generate_bucket_name, run, s7cmd_cmd,
+    generate_bucket_name, run, s7cmd_cmd, wait_until_bucket_gone,
 };
 use predicates::prelude::*;
 use std::path::Path;
+use std::time::Duration;
 
 /// Convert a local path to a form safe to embed in a batch-run script.
 /// `batch-run` tokenizes lines with POSIX shlex, which treats `\` as an
@@ -70,9 +71,10 @@ async fn batch_run_e2e_mixed_workflow_succeeds() {
         "6 succeeded, 0 failed, 0 warnings, 0 skipped",
     ));
 
-    // SDK-side verification: bucket should be gone.
+    // SDK-side verification: bucket should be gone. DeleteBucket is
+    // eventually consistent, so poll instead of a single-shot HeadBucket.
     assert!(
-        !helper.is_bucket_exist(&bucket).await,
+        wait_until_bucket_gone(&bucket, Duration::from_secs(30)).await,
         "delete-bucket step should have removed the bucket"
     );
 
@@ -115,7 +117,7 @@ async fn batch_run_e2e_reads_from_file() {
         "summary mismatch; stderr={stderr}"
     );
     assert!(
-        !helper.is_bucket_exist(&bucket).await,
+        wait_until_bucket_gone(&bucket, Duration::from_secs(30)).await,
         "delete-bucket step should have removed the bucket"
     );
 
@@ -147,7 +149,7 @@ async fn batch_run_e2e_streaming_dispatch_succeeds() {
         ));
 
     assert!(
-        !helper.is_bucket_exist(&bucket).await,
+        wait_until_bucket_gone(&bucket, Duration::from_secs(30)).await,
         "bucket should be gone after streaming run"
     );
 
@@ -276,7 +278,7 @@ async fn batch_run_e2e_continue_on_error_runs_all_lines() {
     ));
 
     assert!(
-        !helper.is_bucket_exist(&real).await,
+        wait_until_bucket_gone(&real, Duration::from_secs(30)).await,
         "real bucket should be gone (delete-bucket ran)"
     );
 
@@ -449,12 +451,11 @@ async fn batch_run_e2e_malformed_policy_failure_propagates() {
     // The original `helper`'s aws-sdk-s3 Client caches bucket-region /
     // endpoint metadata after `create_bucket`, so a HeadBucket from that
     // client can erroneously report the bucket as still present even after
-    // a different process (the batch-run subprocess) has deleted it. Use
-    // a fresh client so the post-script existence check reflects S3's
-    // actual state.
-    let verifier = TestHelper::new().await;
+    // a different process (the batch-run subprocess) has deleted it.
+    // wait_until_bucket_gone polls with a fresh client per attempt, which
+    // also rides out DeleteBucket's propagation delay.
     assert!(
-        !verifier.is_bucket_exist(&bucket).await,
+        wait_until_bucket_gone(&bucket, Duration::from_secs(30)).await,
         "delete-bucket should have removed the bucket on the second line"
     );
 
@@ -948,6 +949,9 @@ async fn batch_run_e2e_all_subcommands_via_file() {
     let website_p = shell_path(&website_path);
     let logging_p = shell_path(&logging_path);
     let notification_p = shell_path(&notification_path);
+    // Destination file for get-object-annotation (created by the script line).
+    let annotation_out = local_dir.join("annotation-out.bin");
+    let annotation_out_p = shell_path(&annotation_out);
 
     // NOTE: `put-bucket-versioning --suspended` is intentionally placed
     // AFTER every DELETE-class object operation. On a Suspended bucket,
@@ -1001,6 +1005,10 @@ presign {auth_target} s3://{bucket}/object1
 put-object-tagging {auth_target} --tagging \"k=v\" s3://{bucket}/object1
 get-object-tagging {auth_target} s3://{bucket}/object1
 delete-object-tagging {auth_target} s3://{bucket}/object1
+put-object-annotation {auth_target} --annotation-name note --annotation-payload {payload_p} s3://{bucket}/object1
+get-object-annotation {auth_target} --annotation-name note s3://{bucket}/object1 {annotation_out_p}
+list-object-annotations {auth_target} s3://{bucket}/object1
+delete-object-annotation {auth_target} --annotation-name note s3://{bucket}/object1
 ls {auth_target} s3://{bucket}
 sync {auth_target} {sync_p} s3://{bucket}/synced/
 mv {auth_both} s3://{bucket}/object1 s3://{bucket}/object1-moved

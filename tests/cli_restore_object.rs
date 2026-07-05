@@ -1,5 +1,9 @@
 //! Process-level CLI tests for the `restore-object` subcommand.
-//! These run without AWS credentials or network access.
+//! These run without AWS credentials or network access (mock-endpoint
+//! tests talk only to a loopback HTTP server).
+
+mod common;
+use common::{MockResponse, MockS3Server, mock_target_args, s7cmd_cmd_clean_env};
 
 use std::process::{Command, Stdio};
 
@@ -114,5 +118,20 @@ fn target_access_key_without_secret_exits_non_zero() {
     assert!(
         stderr.to_lowercase().contains("required")
             || stderr.to_lowercase().contains("--target-secret-access-key")
+    );
+}
+
+#[test]
+fn mock_endpoint_restore_initiated_exits_0() {
+    let server = MockS3Server::start(vec![MockResponse::new(202, "")]);
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.args(["restore-object", "-v", "--days", "1"])
+        .args(mock_target_args(&server.endpoint_url()))
+        .arg("s3://mock-bucket/deep-archive-object");
+    let (code, _stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(code, Some(0), "expected success; stderr: {stderr}");
+    assert!(
+        stderr.contains("Restore initiated."),
+        "expected the success info line (-v); got: {stderr}"
     );
 }

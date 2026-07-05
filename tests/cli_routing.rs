@@ -92,6 +92,55 @@ fn parses_delete_object_tagging() {
 }
 
 #[test]
+fn parses_get_object_annotation() {
+    let cli = Cli::try_parse_from([
+        "s7cmd",
+        "get-object-annotation",
+        "s3://bucket/key",
+        "-",
+        "--annotation-name",
+        "note",
+    ])
+    .expect("get-object-annotation should parse");
+    assert!(matches!(cli.command, Some(Cmd::GetObjectAnnotation(_))));
+}
+
+#[test]
+fn parses_put_object_annotation() {
+    let cli = Cli::try_parse_from([
+        "s7cmd",
+        "put-object-annotation",
+        "s3://bucket/key",
+        "--annotation-name",
+        "note",
+        "--annotation-payload",
+        "-",
+    ])
+    .expect("put-object-annotation should parse");
+    assert!(matches!(cli.command, Some(Cmd::PutObjectAnnotation(_))));
+}
+
+#[test]
+fn parses_delete_object_annotation() {
+    let cli = Cli::try_parse_from([
+        "s7cmd",
+        "delete-object-annotation",
+        "s3://bucket/key",
+        "--annotation-name",
+        "note",
+    ])
+    .expect("delete-object-annotation should parse");
+    assert!(matches!(cli.command, Some(Cmd::DeleteObjectAnnotation(_))));
+}
+
+#[test]
+fn parses_list_object_annotations() {
+    let cli = Cli::try_parse_from(["s7cmd", "list-object-annotations", "s3://bucket/key"])
+        .expect("list-object-annotations should parse");
+    assert!(matches!(cli.command, Some(Cmd::ListObjectAnnotations(_))));
+}
+
+#[test]
 fn parses_create_bucket() {
     let cli = Cli::try_parse_from(["s7cmd", "create-bucket", "s3://bucket"])
         .expect("create-bucket should parse");

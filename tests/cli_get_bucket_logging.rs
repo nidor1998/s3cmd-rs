@@ -1,5 +1,9 @@
 //! Process-level CLI tests for the `get-bucket-logging` subcommand.
-//! These run without AWS credentials or network access.
+//! These run without AWS credentials or network access (mock-endpoint
+//! tests talk only to a loopback HTTP server).
+
+mod common;
+use common::{MockResponse, MockS3Server, mock_target_args, s7cmd_cmd_clean_env};
 
 use std::process::{Command, Stdio};
 
@@ -107,5 +111,29 @@ fn target_no_sign_request_conflicts_with_target_profile() {
         stderr.to_lowercase().contains("cannot be used")
             || stderr.to_lowercase().contains("conflict"),
         "expected clap conflict message; got: {stderr}"
+    );
+}
+
+#[test]
+fn mock_endpoint_configured_logging_prints_json() {
+    let server = MockS3Server::start(vec![MockResponse::new(
+        200,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+         <BucketLoggingStatus xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
+           <LoggingEnabled>\
+             <TargetBucket>mock-log-bucket</TargetBucket>\
+             <TargetPrefix>logs/</TargetPrefix>\
+           </LoggingEnabled>\
+         </BucketLoggingStatus>",
+    )]);
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.arg("get-bucket-logging")
+        .args(mock_target_args(&server.endpoint_url()))
+        .arg("s3://mock-bucket");
+    let (code, stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(code, Some(0), "expected success; stderr: {stderr}");
+    assert!(
+        stdout.contains("\"LoggingEnabled\"") && stdout.contains("mock-log-bucket"),
+        "stdout should contain the configured logging JSON; got: {stdout}"
     );
 }

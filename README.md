@@ -11,7 +11,7 @@ A reliable, flexible, and fast command-line tool for Amazon S3.
 s7cmd combines the speed of a Rust async runtime with the breadth of
 the AWS S3 API surface, providing high-throughput object operations
 (`ls`, `cp`, `mv`, `rename`, `rm`, `sync`, `clean`) alongside comprehensive
-bucket administration (lifecycle, policy, encryption, CORS, public
+bucket administration (lifecycle, policy, encryption, object annotations, CORS, public
 access block, website, logging, notification, and more) — all from a
 single static binary.
 
@@ -73,6 +73,12 @@ Object Metadata:
   get-object-tagging                    Get an S3 object's tagging
   put-object-tagging                    Put tagging on an S3 object
   delete-object-tagging                 Delete tagging from an S3 object
+
+Object Annotation:
+  get-object-annotation                 Download a named annotation payload from an S3 object
+  put-object-annotation                 Attach a named annotation payload to an S3 object
+  delete-object-annotation              Delete a named annotation from an S3 object
+  list-object-annotations               List the annotations of an S3 object and print them as JSON
 
 Bucket Operations:
   create-bucket                         Create an S3 bucket

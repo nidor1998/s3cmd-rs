@@ -50,6 +50,12 @@ Object Metadata:
   put-object-tagging                    Put tagging on an S3 object
   delete-object-tagging                 Delete tagging from an S3 object
 
+Object Annotation:
+  get-object-annotation                 Download a named annotation payload from an S3 object
+  put-object-annotation                 Attach a named annotation payload to an S3 object
+  delete-object-annotation              Delete a named annotation from an S3 object
+  list-object-annotations               List the annotations of an S3 object and print them as JSON
+
 Bucket Operations:
   create-bucket                         Create an S3 bucket
   delete-bucket                         Delete an S3 bucket
@@ -265,6 +271,16 @@ pub enum Cmd {
     PutObjectTagging(s3util_rs::config::args::PutObjectTaggingArgs),
     /// Delete tagging from an S3 object
     DeleteObjectTagging(s3util_rs::config::args::DeleteObjectTaggingArgs),
+
+    // Object Annotation
+    /// Download a named annotation payload from an S3 object
+    GetObjectAnnotation(s3util_rs::config::args::GetObjectAnnotationArgs),
+    /// Attach a named annotation payload to an S3 object
+    PutObjectAnnotation(s3util_rs::config::args::PutObjectAnnotationArgs),
+    /// Delete a named annotation from an S3 object
+    DeleteObjectAnnotation(s3util_rs::config::args::DeleteObjectAnnotationArgs),
+    /// List the annotations of an S3 object and print them as JSON
+    ListObjectAnnotations(s3util_rs::config::args::ListObjectAnnotationsArgs),
 
     // Bucket Operations
     /// Create an S3 bucket

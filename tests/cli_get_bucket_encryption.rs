@@ -1,5 +1,9 @@
 //! Process-level CLI tests for the `get-bucket-encryption` subcommand.
-//! These run without AWS credentials or network access.
+//! These run without AWS credentials or network access (mock-endpoint
+//! tests talk only to a loopback HTTP server).
+
+mod common;
+use common::{MockResponse, MockS3Server, mock_target_args, s7cmd_cmd_clean_env};
 
 use std::process::{Command, Stdio};
 
@@ -108,5 +112,27 @@ fn target_no_sign_request_conflicts_with_target_profile() {
         stderr.to_lowercase().contains("cannot be used")
             || stderr.to_lowercase().contains("conflict"),
         "expected clap conflict message; got: {stderr}"
+    );
+}
+
+#[test]
+fn mock_endpoint_missing_encryption_config_exits_4() {
+    let server = MockS3Server::start(vec![MockResponse::s3_error(
+        404,
+        "ServerSideEncryptionConfigurationNotFoundError",
+    )]);
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.arg("get-bucket-encryption")
+        .args(mock_target_args(&server.endpoint_url()))
+        .arg("s3://mock-bucket");
+    let (code, _stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(
+        code,
+        Some(4),
+        "missing encryption config should exit 4; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("encryption configuration for s3://mock-bucket not found"),
+        "expected the not-found warning; got: {stderr}"
     );
 }
