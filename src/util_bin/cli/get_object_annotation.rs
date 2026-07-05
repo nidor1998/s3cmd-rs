@@ -97,12 +97,14 @@ fn check_integrity(
     })
 }
 
-/// Re-read the saved file from disk and re-run the integrity checks against its
-/// on-disk bytes — the `cp`-style, recompute-from-disk verification. Runs after
-/// the temp file has been renamed into place; a mismatch here can only mean the
-/// write corrupted the data, so the error is wrapped with context saying the
-/// saved file may be corrupted. `Verified`/`Unverifiable` are both success (the
-/// pre-write step already warned about un-verifiability).
+/// Re-read the just-written temp file from disk and re-run the integrity checks
+/// against its on-disk bytes — the recompute-from-disk verification. Runs
+/// against the temp file *before* it is renamed into place: `persist` is an
+/// atomic same-directory rename that never rewrites data, so a mismatch here can
+/// only mean the write corrupted the data. Checking before the rename means a
+/// corrupt write is caught while any pre-existing `<OUTFILE>` is still intact,
+/// instead of after it has already been clobbered. `Verified`/`Unverifiable` are
+/// both success (the pre-write step already warned about un-verifiability).
 fn verify_saved_file(
     path: &Path,
     content_length: Option<i64>,
@@ -112,16 +114,74 @@ fn verify_saved_file(
     bucket: &str,
     key: &str,
 ) -> Result<()> {
-    let on_disk = std::fs::read(path)
-        .with_context(|| format!("re-reading saved file {} for verification", path.display()))?;
+    let on_disk = std::fs::read(path).with_context(|| {
+        format!(
+            "re-reading the freshly-written temp file {} for verification",
+            path.display()
+        )
+    })?;
     check_integrity(&on_disk, content_length, e_tag, sse, checksum, bucket, key).with_context(
         || {
             format!(
-                "post-write verification failed for s3://{bucket}/{key}: the saved file {} may be corrupted",
-                path.display()
+                "post-write verification failed for s3://{bucket}/{key}: the payload was corrupted while writing to disk"
             )
         },
     )?;
+    Ok(())
+}
+
+/// Write `payload` to a temp file next to `outfile`, verify the temp file's
+/// on-disk bytes, and only on success atomically rename it onto `outfile`.
+///
+/// The verify runs *before* the rename, so a corrupt write (or any integrity
+/// mismatch) aborts with `Err` while the temp file is dropped and any
+/// pre-existing `outfile` is left untouched — a real run never replaces a good
+/// copy with unverified data. Factored out of [`run_get_object_annotation`] so
+/// this write→verify→persist ordering is unit-testable without a live S3 client.
+#[allow(clippy::too_many_arguments)]
+fn write_verified_output(
+    outfile: &str,
+    payload: &[u8],
+    content_length: Option<i64>,
+    e_tag: Option<&str>,
+    sse: Option<&ServerSideEncryption>,
+    checksum: Option<&(ChecksumAlgorithm, String)>,
+    bucket: &str,
+    key: &str,
+) -> Result<()> {
+    let path = Path::new(outfile);
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let mut tmp = NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temp file next to {outfile}"))?;
+    tmp.write_all(payload)
+        .context("writing annotation payload to temp file")?;
+    tmp.flush()
+        .context("flushing annotation payload temp file")?;
+
+    // Post-write verification, run *before* the atomic rename: re-read the temp
+    // file and recompute the ETag / additional checksum from its on-disk bytes.
+    // A mismatch can only mean the write corrupted the data. Verifying here —
+    // rather than after persist — means a corrupt write never replaces a
+    // pre-existing <OUTFILE>: on failure the temp file is dropped (deleted) and
+    // the destination is left untouched. `persist` is an atomic same-directory
+    // rename that never rewrites data, so it cannot reintroduce corruption after
+    // this check.
+    verify_saved_file(
+        tmp.path(),
+        content_length,
+        e_tag,
+        sse,
+        checksum,
+        bucket,
+        key,
+    )
+    .with_context(|| format!("aborted saving to {outfile}; the destination was left untouched"))?;
+
+    tmp.persist(path)
+        .map_err(|e| anyhow::anyhow!("persisting annotation payload to {outfile}: {e}"))?;
     Ok(())
 }
 
@@ -130,12 +190,14 @@ fn verify_saved_file(
 ///
 /// Fetches the annotation payload (checksum-mode ENABLED), buffers it in memory
 /// (≤1 MiB), verifies content length, the ETag/MD5 (only for AES256 objects),
-/// and the additional checksum (if any); warns when neither check applies. Then
-/// writes the payload to a temp file and atomically renames it to `<OUTFILE>`
-/// (or streams to stdout when `<OUTFILE>` is `-`). For file output it then
-/// re-reads the saved file and recomputes the same ETag / additional checksum
-/// from disk (`cp`-style, rename-then-verify order) so a corrupt write is
-/// caught; a post-write mismatch leaves the file in place and returns `Err`.
+/// and the additional checksum (if any); warns when neither check applies. Then,
+/// for file output, writes the payload to a temp file next to `<OUTFILE>`,
+/// re-reads that temp file and recomputes the same ETag / additional checksum
+/// from disk so a corrupt write is caught, and only then atomically renames it
+/// onto `<OUTFILE>` (streaming to stdout instead when `<OUTFILE>` is `-`).
+/// Verifying before the rename means a post-write mismatch aborts with `Err` and
+/// discards the temp file, leaving any pre-existing `<OUTFILE>` untouched rather
+/// than replaced with corrupt data.
 /// Finally it prints AWS-CLI-shape JSON metadata (file mode only). Returns
 /// `ExitStatus::NotFound` (exit 4) when the bucket, object, or version does not
 /// exist, or when the object exists but has no annotation under the requested
@@ -262,26 +324,12 @@ pub async fn run_get_object_annotation(
         return Ok(ExitStatus::Success);
     }
 
-    let path = Path::new(outfile);
-    let parent = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    let mut tmp = NamedTempFile::new_in(parent)
-        .with_context(|| format!("creating temp file next to {outfile}"))?;
-    tmp.write_all(&payload)
-        .context("writing annotation payload to temp file")?;
-    tmp.flush()
-        .context("flushing annotation payload temp file")?;
-    tmp.persist(path)
-        .map_err(|e| anyhow::anyhow!("persisting annotation payload to {outfile}: {e}"))?;
-
-    // Post-write verification: re-read the saved file and recompute the ETag /
-    // additional checksum from disk (cp-style, rename-then-verify order). A
-    // mismatch can only mean the write corrupted the data; the file is left in
-    // place and we return Err.
-    verify_saved_file(
-        path,
+    // Write to a temp file, verify its on-disk bytes, and only then rename it
+    // onto <OUTFILE> (verify-before-rename, so a corrupt write never clobbers a
+    // pre-existing file — see write_verified_output).
+    write_verified_output(
+        outfile,
+        &payload,
         content_length,
         e_tag.as_deref(),
         sse.as_ref(),
@@ -519,7 +567,10 @@ mod tests {
         let err =
             verify_saved_file(tmp.path(), None, None, None, Some(&checksum), "b", "k").unwrap_err();
         let msg = format!("{err:#}");
-        assert!(msg.contains("may be corrupted"), "got: {msg}");
+        assert!(
+            msg.contains("corrupted while writing to disk"),
+            "got: {msg}"
+        );
     }
 
     #[test]
@@ -540,5 +591,85 @@ mod tests {
             "k",
         );
         assert!(res.is_ok(), "expected ok, got: {res:?}");
+    }
+
+    #[test]
+    fn write_verified_output_preserves_existing_file_on_verify_failure() {
+        // A pre-existing <OUTFILE> holding good data must survive a post-write
+        // verification failure: the corrupt temp copy is discarded and the
+        // destination is never overwritten. Regression guard for verifying
+        // *before* the rename rather than after.
+        let dir = tempfile::tempdir().unwrap();
+        let outfile = dir.path().join("out.bin");
+        std::fs::write(&outfile, b"PRE-EXISTING GOOD DATA").unwrap();
+
+        let payload = b"new payload bytes";
+        // Expected checksum deliberately does NOT match `payload`, so the temp
+        // file — though written correctly — fails verification, standing in for
+        // a corrupt write.
+        let wrong_checksum = (ChecksumAlgorithm::Crc64Nvme, "AAAAAAAAAAA=".to_string());
+
+        let err = write_verified_output(
+            outfile.to_str().unwrap(),
+            payload,
+            Some(payload.len() as i64),
+            None,
+            None,
+            Some(&wrong_checksum),
+            "b",
+            "k",
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("the destination was left untouched"),
+            "got: {err:#}"
+        );
+
+        // Central guarantee: the pre-existing file is intact, not clobbered...
+        assert_eq!(
+            std::fs::read(&outfile).unwrap(),
+            b"PRE-EXISTING GOOD DATA",
+            "pre-existing outfile must be preserved on verify failure"
+        );
+        // ...and the discarded temp file left nothing behind.
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "only the untouched outfile should remain in the directory"
+        );
+    }
+
+    #[test]
+    fn write_verified_output_replaces_file_and_leaves_no_temp_on_success() {
+        // On successful verification the payload is atomically renamed onto
+        // <OUTFILE> (replacing prior contents) with no temp file left behind.
+        let dir = tempfile::tempdir().unwrap();
+        let outfile = dir.path().join("out.bin");
+        std::fs::write(&outfile, b"OLD CONTENT").unwrap();
+
+        let payload = b"hello world";
+        let checksum = (
+            ChecksumAlgorithm::Crc64Nvme,
+            annotation::compute_checksum_base64(payload, ChecksumAlgorithm::Crc64Nvme),
+        );
+
+        write_verified_output(
+            outfile.to_str().unwrap(),
+            payload,
+            Some(payload.len() as i64),
+            None,
+            None,
+            Some(&checksum),
+            "b",
+            "k",
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&outfile).unwrap(), payload);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "temp file must be renamed onto the outfile, not left behind"
+        );
     }
 }
