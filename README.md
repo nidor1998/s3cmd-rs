@@ -11,7 +11,7 @@ A reliable, flexible, and fast command-line tool for Amazon S3.
 s7cmd combines the speed of a Rust async runtime with the breadth of
 the AWS S3 API surface, providing high-throughput object operations
 (`ls`, `cp`, `mv`, `rename`, `rm`, `sync`, `clean`) alongside comprehensive
-bucket administration (lifecycle, policy, encryption, CORS, public
+bucket administration (lifecycle, policy, encryption, object annotations, CORS, public
 access block, website, logging, notification, and more) — all from a
 single static binary.
 
