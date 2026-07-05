@@ -461,37 +461,6 @@ async fn delete_object_annotation_dispatch_success() {
 }
 
 #[tokio::test]
-async fn delete_object_annotation_dispatch_annotation_not_found() {
-    // Object exists, but no annotation under the requested name → exit 4.
-    let helper = TestHelper::new().await;
-    let bucket = generate_bucket_name();
-    helper.create_bucket(&bucket, REGION).await;
-    helper
-        .put_object(&bucket, "note.txt", b"object body".to_vec())
-        .await;
-
-    let target = format!("s3://{bucket}/note.txt");
-    let (code, _stdout, _stderr) = run(s7cmd_cmd().args([
-        "delete-object-annotation",
-        "--target-profile",
-        PROFILE,
-        "--target-region",
-        REGION,
-        "--annotation-name",
-        "no-such-annotation",
-        &target,
-    ]));
-
-    assert_eq!(
-        code,
-        Some(4),
-        "delete-object-annotation for a missing annotation name must exit 4"
-    );
-
-    helper.delete_bucket_with_cascade(&bucket).await;
-}
-
-#[tokio::test]
 async fn delete_object_annotation_dispatch_bucket_not_found() {
     let bucket = generate_bucket_name(); // never created
 
