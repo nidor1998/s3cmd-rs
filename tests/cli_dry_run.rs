@@ -191,6 +191,33 @@ fn create_bucket_dry_run_with_tagging_logs_both_lines() {
     );
 }
 
+#[test]
+fn create_bucket_dry_run_account_regional_logs_namespace_line() {
+    let (ok, _stdout, stderr, code) = run(s7cmd().args([
+        "create-bucket",
+        "--dry-run",
+        "--bucket-namespace",
+        "account-regional",
+        "--create-bucket-configuration",
+        "LocationConstraint=ap-northeast-1",
+        FAKE_BUCKET,
+    ]));
+    assert!(ok, "create-bucket --dry-run must exit 0; stderr={stderr}");
+    assert_eq!(code, Some(0));
+    assert!(
+        stderr.contains("would create bucket"),
+        "missing 'would create bucket': {stderr}"
+    );
+    assert!(
+        stderr.contains("account-regional bucket namespace"),
+        "missing account-regional namespace dry-run line: {stderr}"
+    );
+    assert!(
+        stderr.contains("ap-northeast-1"),
+        "expected the location constraint in the dry-run line: {stderr}"
+    );
+}
+
 // ---------- put-* (representative: put-bucket-cors with JSON config) ----------
 
 #[test]
