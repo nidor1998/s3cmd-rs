@@ -384,3 +384,39 @@ fn mock_endpoint_aes256_etag_mismatch_exits_1_without_outfile() {
     );
     assert!(!outfile.exists(), "no outfile may be created on mismatch");
 }
+
+#[test]
+fn mock_endpoint_write_to_unwritable_outfile_exits_1_without_outfile() {
+    // The S3 fetch succeeds and the payload passes the in-transit checks
+    // (unverifiable, but writable), yet the <OUTFILE>'s parent directory does
+    // not exist so the temp-file write fails. run_get_object_annotation must
+    // propagate that as exit 1 and create nothing — covering the
+    // write_verified_output error branch reached only after a successful fetch.
+    let dir = tempfile::tempdir().unwrap();
+    let missing_parent = dir.path().join("no-such-subdir");
+    let outfile = missing_parent.join("annotation.bin");
+    let payload = "mock annotation payload";
+    let server = MockS3Server::start(vec![MockResponse::new(200, payload)]);
+    let mut cmd = s7cmd_cmd_clean_env();
+    cmd.args(["get-object-annotation", "--annotation-name", "note"])
+        .args(mock_target_args(&server.endpoint_url()))
+        .args(["s3://mock-bucket/mock-key", outfile.to_str().unwrap()]);
+    let (code, _stdout, stderr) = common::run(&mut cmd);
+    assert_eq!(
+        code,
+        Some(1),
+        "an unwritable outfile must exit 1; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("creating temp file next to"),
+        "expected the temp-file creation error; got: {stderr}"
+    );
+    assert!(
+        !outfile.exists(),
+        "no outfile may be created on write failure"
+    );
+    assert!(
+        !missing_parent.exists(),
+        "the missing parent dir must not be created"
+    );
+}

@@ -3006,9 +3006,9 @@ dependencies = [
 
 [[package]]
 name = "s3util-rs"
-version = "1.6.0"
+version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc297f58d1637860fd571944665ab38ad72273e2e99f3c65e600608c544ab964"
+checksum = "82e5511aaf9c2914fb38558689b3190cff2481b3f7d1785865ec5d74325738b6"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3065,7 +3065,7 @@ dependencies = [
 
 [[package]]
 name = "s7cmd"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "assert_cmd",

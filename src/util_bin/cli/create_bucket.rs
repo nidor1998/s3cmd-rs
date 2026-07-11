@@ -1,11 +1,11 @@
-// Vendored from s3util-rs@1.2.0
+// Vendored from s3util-rs@1.7.1
 //   src/bin/s3util/cli/create_bucket.rs
-// Adjustments: no tests stripped; rewrote crate::cli → super
+// Adjustments: none — the upstream file already targets `super::ExitStatus`.
 
 use anyhow::Result;
 use tracing::info;
 
-use aws_sdk_s3::types::Tagging;
+use aws_sdk_s3::types::{BucketNamespace, Tagging};
 use s3util_rs::config::ClientConfig;
 use s3util_rs::config::args::create_bucket::CreateBucketArgs;
 use s3util_rs::storage::s3::api::{self, HeadError};
@@ -36,6 +36,12 @@ pub async fn run_create_bucket(
         None
     };
 
+    // Account-regional bucket options. Both flags are validated by clap's
+    // value_parsers and clap enforces that they are supplied together, so the
+    // location constraint is present exactly when the namespace is.
+    let bucket_namespace = args.bucket_namespace.as_deref().map(BucketNamespace::from);
+    let location_constraint = args.create_bucket_configuration.as_deref();
+
     let client = client_config.create_client().await;
 
     if args.if_not_exists {
@@ -57,13 +63,21 @@ pub async fn run_create_bucket(
 
     if args.dry_run {
         info!(bucket = %bucket, "[dry-run] would create bucket.");
+        if let Some(bucket_namespace) = args.bucket_namespace.as_deref() {
+            info!(
+                bucket = %bucket,
+                bucket_namespace,
+                location_constraint = location_constraint.unwrap_or_default(),
+                "[dry-run] would use account-regional bucket namespace."
+            );
+        }
         if tagging.is_some() {
             info!(bucket = %bucket, "[dry-run] would put bucket tagging.");
         }
         return Ok(ExitStatus::Success);
     }
 
-    api::create_bucket(&client, &bucket).await?;
+    api::create_bucket(&client, &bucket, bucket_namespace, location_constraint).await?;
     info!(bucket = %bucket, "Bucket created.");
 
     if let Some(tagging) = tagging {

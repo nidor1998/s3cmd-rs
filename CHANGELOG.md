@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-07-11
+
+### Added
+
+#### s3util-rs
+
+- `create-bucket` gains account-level regional bucket support: pass `--bucket-namespace account-regional` together with
+  `--create-bucket-configuration LocationConstraint=<region>` to create a bucket in your account's regional namespace
+  (name shape `<prefix>-<accountid>-<region>-an`). The two options are required together — `account-regional` is the
+  only accepted `--bucket-namespace` value and `LocationConstraint=<region>` the only accepted
+  `--create-bucket-configuration` value — and when both are supplied they are sent to `CreateBucket` verbatim, bypassing
+  the region/name-derived configuration.
+
+### Fixed
+
+#### s3util-rs
+
+- `get-object-annotation`: an object whose additional checksum uses an algorithm s3util cannot recompute (e.g. `SHA512`,
+  `MD5`, `XXHASH*`) now fails with a clear integrity error instead of panicking. The unsupported algorithm is detected
+  up front and rejected rather than reaching the checksum constructor.
+
+### Changed
+
+- s3util-rs `v1.6.0 -> v1.7.1`
+
+### Underlying libraries
+
+```toml
+s3sync = "=1.59.0"
+s3util-rs = "=1.7.1"
+s3rm-rs = "=1.3.8"
+s3ls-rs = "=1.0.3"
+```
+
 ## [1.4.0] - 2026-07-05
 
 Adds S3 object-annotation support.

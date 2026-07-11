@@ -58,11 +58,110 @@ fn help_mentions_if_not_exists_option() {
 }
 
 #[test]
+fn help_mentions_bucket_namespace_and_configuration_options() {
+    let (ok, stdout, _stderr, _code) = run(s7cmd().args(["create-bucket", "--help"]));
+    assert!(ok);
+    assert!(
+        stdout.contains("--bucket-namespace"),
+        "expected --bucket-namespace in help output: {stdout}"
+    );
+    assert!(
+        stdout.contains("--create-bucket-configuration"),
+        "expected --create-bucket-configuration in help output: {stdout}"
+    );
+}
+
+// The account-regional flags are a both-or-neither pair (clap `requires`).
+#[test]
+fn bucket_namespace_without_configuration_exits_2() {
+    let (ok, _stdout, stderr, code) = run(s7cmd().args([
+        "create-bucket",
+        "s3://my-bucket",
+        "--bucket-namespace",
+        "account-regional",
+    ]));
+    assert!(!ok);
+    assert_eq!(code, Some(2), "clap missing-requirement should exit 2");
+    assert!(
+        stderr.to_lowercase().contains("required")
+            || stderr.contains("--create-bucket-configuration"),
+        "expected a missing --create-bucket-configuration message; got: {stderr}"
+    );
+}
+
+#[test]
+fn configuration_without_bucket_namespace_exits_2() {
+    let (ok, _stdout, stderr, code) = run(s7cmd().args([
+        "create-bucket",
+        "s3://my-bucket",
+        "--create-bucket-configuration",
+        "LocationConstraint=ap-northeast-1",
+    ]));
+    assert!(!ok);
+    assert_eq!(code, Some(2), "clap missing-requirement should exit 2");
+    assert!(
+        stderr.to_lowercase().contains("required") || stderr.contains("--bucket-namespace"),
+        "expected a missing --bucket-namespace message; got: {stderr}"
+    );
+}
+
+// Only `account-regional` is accepted for --bucket-namespace (value_parser).
+#[test]
+fn invalid_bucket_namespace_value_rejected() {
+    let (ok, _stdout, stderr, _code) = run(s7cmd().args([
+        "create-bucket",
+        "s3://my-bucket",
+        "--bucket-namespace",
+        "global",
+        "--create-bucket-configuration",
+        "LocationConstraint=ap-northeast-1",
+    ]));
+    assert!(
+        !ok,
+        "only account-regional is accepted for --bucket-namespace"
+    );
+    assert!(!stderr.is_empty());
+}
+
+// Only `LocationConstraint=<region>` is accepted for --create-bucket-configuration.
+#[test]
+fn invalid_create_bucket_configuration_value_rejected() {
+    let (ok, _stdout, stderr, _code) = run(s7cmd().args([
+        "create-bucket",
+        "s3://my-bucket",
+        "--bucket-namespace",
+        "account-regional",
+        "--create-bucket-configuration",
+        "LocationType=AvailabilityZone",
+    ]));
+    assert!(
+        !ok,
+        "only LocationConstraint= is accepted for --create-bucket-configuration"
+    );
+    assert!(!stderr.is_empty());
+}
+
+#[test]
 fn missing_target_exits_non_zero() {
     let (ok, _stdout, stderr, code) = run(s7cmd().arg("create-bucket"));
     assert!(!ok);
     assert_eq!(code, Some(2), "clap missing-arg should exit 2");
     assert!(stderr.to_lowercase().contains("required") || stderr.to_lowercase().contains("usage"));
+}
+
+#[test]
+fn target_with_key_in_path_exits_1() {
+    // A create-bucket target must be s3://<BUCKET> with no key/prefix. A path
+    // carrying a key is accepted by clap but rejected by bucket_name() before
+    // any AWS call, so the runner returns Err (exit 1). Covers the bucket_name()
+    // error arm in run_create_bucket.
+    let (ok, _stdout, stderr, code) = run(s7cmd().args(["create-bucket", "s3://bucket/key"]));
+    assert!(!ok);
+    assert_eq!(code, Some(1), "invalid target (has key) should exit 1");
+    assert!(
+        stderr.contains("with no key or prefix"),
+        "expected the no-key/prefix error; got: {stderr}"
+    );
 }
 
 // NOTE: s3util-rs has a `auto_complete_shell_short_circuits_without_target`

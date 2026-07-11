@@ -206,6 +206,70 @@ async fn get_object_annotation_dispatch_success_to_file() {
 }
 
 #[tokio::test]
+async fn get_object_annotation_dispatch_write_failure_exits_1() {
+    // The annotation is fetched successfully, but <OUTFILE>'s parent directory
+    // does not exist, so the temp-file write fails. get-object-annotation must
+    // exit 1 and create nothing — the end-to-end counterpart of the runner's
+    // write-failure path (verify-before-rename never creates a partial file).
+    let helper = TestHelper::new().await;
+    let bucket = generate_bucket_name();
+    helper.create_bucket(&bucket, REGION).await;
+    helper
+        .put_object(&bucket, "note.txt", b"object body".to_vec())
+        .await;
+
+    let dir = create_temp_dir();
+    let payload = b"hello annotation payload";
+    let payload_file = create_test_file(&dir, "payload.bin", payload);
+    // <OUTFILE> under a directory that does not exist: the write must fail.
+    let out_file = dir.join("no-such-subdir").join("got.bin");
+    let target = format!("s3://{bucket}/note.txt");
+
+    let (put_code, _o, put_err) = run(s7cmd_cmd().args([
+        "put-object-annotation",
+        "--target-profile",
+        PROFILE,
+        "--target-region",
+        REGION,
+        "--annotation-name",
+        ANNOTATION_NAME,
+        "--annotation-payload",
+        payload_file.to_str().unwrap(),
+        &target,
+    ]));
+    assert_eq!(put_code, Some(0), "seed put must exit 0; stderr={put_err}");
+
+    let (code, _stdout, stderr) = run(s7cmd_cmd().args([
+        "get-object-annotation",
+        "--target-profile",
+        PROFILE,
+        "--target-region",
+        REGION,
+        "--annotation-name",
+        ANNOTATION_NAME,
+        &target,
+        out_file.to_str().unwrap(),
+    ]));
+
+    assert_eq!(
+        code,
+        Some(1),
+        "get-object-annotation to an unwritable outfile must exit 1; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("creating temp file next to"),
+        "expected the temp-file creation error; got: {stderr}"
+    );
+    assert!(
+        !out_file.exists(),
+        "no outfile may be created on write failure"
+    );
+
+    helper.delete_bucket_with_cascade(&bucket).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn get_object_annotation_dispatch_success_to_stdout() {
     let helper = TestHelper::new().await;
     let bucket = generate_bucket_name();
