@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MD5`, `XXHASH*`) now fails with a clear integrity error instead of panicking. The unsupported algorithm is detected
   up front and rejected rather than reaching the checksum constructor.
 
+### Security
+
+- Bump `crossbeam-epoch` `v0.9.18 -> v0.9.20` to address [RUSTSEC-2026-0204](https://rustsec.org/advisories/RUSTSEC-2026-0204).
+  Transitive dependency (pulled in via `s3ls-rs` → `rayon`); `Cargo.lock`-only, with no public API or behavior change.
+
 ### Changed
 
 - s3util-rs `v1.6.0 -> v1.7.1`
