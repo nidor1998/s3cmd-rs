@@ -176,7 +176,7 @@ pub struct BatchRunArgs {
     pub script: String,
 
     /// Number of commands to run concurrently. 1 = sequential (default).
-    /// 0 = use all logical CPUs. Must be no more than `MAX_PARALLEL` (1024);
+    /// 0 = use all logical CPUs. Must be no more than 1024;
     /// an oversized value is rejected at parse time rather than panicking the
     /// tokio semaphore.
     #[arg(long, default_value_t = 1, value_name = "N", value_parser = parse_parallel)]
