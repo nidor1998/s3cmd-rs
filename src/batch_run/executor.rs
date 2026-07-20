@@ -1,6 +1,7 @@
 //! Sequential and parallel execution loops.
 
 use crate::batch_run::progress::Progress;
+use crate::batch_run::redact::redact_secrets;
 use crate::batch_run::summary::Summary;
 use crate::cli::Cmd;
 
@@ -98,7 +99,7 @@ fn log_start(line_no: usize, raw: &str) {
         line = line_no,
         event = "start",
         command = command_token(raw),
-        raw = raw,
+        raw = redact_secrets(raw).as_ref(),
         "line started",
     );
 }
@@ -139,7 +140,7 @@ async fn execute_line(line: PreparedLine, dispatch: &DispatchFn) -> (usize, i32)
                         event = "panicked",
                         exit_code = EXIT_CODE_PANIC,
                         command = command_token(raw_trimmed),
-                        raw = raw_trimmed,
+                        raw = redact_secrets(raw_trimmed).as_ref(),
                         panic = msg.as_str(),
                         "subcommand panicked",
                     );
@@ -156,7 +157,7 @@ async fn execute_line(line: PreparedLine, dispatch: &DispatchFn) -> (usize, i32)
                 reason = reason,
                 exit_code = EXIT_CODE_INVALID_LINE,
                 command = command_token(raw),
-                raw = raw,
+                raw = redact_secrets(raw).as_ref(),
                 "line invalid",
             );
             EXIT_CODE_INVALID_LINE
@@ -203,8 +204,10 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// The 3/4/130 literals avoid a cross-module dep just for three numbers;
 /// each bucket matches the progress-bar / summary bucket the code feeds.
 fn log_end(line_no: usize, raw: &str, code: i32) {
-    let raw = raw.trim_end();
-    let command = command_token(raw);
+    let trimmed = raw.trim_end();
+    let command = command_token(trimmed);
+    let redacted = redact_secrets(trimmed);
+    let raw = redacted.as_ref();
     match code {
         0 => tracing::info!(
             line = line_no,
@@ -1384,6 +1387,7 @@ mod tests {
     /// further lines run, even though there are more).
     #[tokio::test]
     async fn sequential_dispatch_panic_recovers_and_records_failure() {
+        let _serial = PANIC_CALLSITE_LOCK.lock().await;
         let lines = make_lines(3);
         let (code, summary) = run_sequential(
             lines,
@@ -1404,6 +1408,7 @@ mod tests {
     /// machinery as other failures.
     #[tokio::test]
     async fn sequential_dispatch_panic_continues_with_continue_on_error() {
+        let _serial = PANIC_CALLSITE_LOCK.lock().await;
         // First call panics, subsequent calls return 0 — but
         // `panicking_dispatch` panics on every call, so use a custom
         // dispatch that panics once then returns 0.
@@ -1435,6 +1440,7 @@ mod tests {
     /// Streaming sequential: panic recovery via the channel path.
     #[tokio::test]
     async fn sequential_streaming_dispatch_panic_recovers_and_records_failure() {
+        let _serial = PANIC_CALLSITE_LOCK.lock().await;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         for line in make_lines(1) {
             tx.send(line).unwrap();
@@ -1453,6 +1459,7 @@ mod tests {
     /// one failed entry, no successes.
     #[tokio::test]
     async fn parallel_dispatch_panic_recovers_and_records_failure() {
+        let _serial = PANIC_CALLSITE_LOCK.lock().await;
         let lines = make_lines(1);
         let (code, summary) = run_parallel(
             lines,
@@ -1469,6 +1476,7 @@ mod tests {
     /// `run_parallel_streaming`: same shape, via the channel.
     #[tokio::test]
     async fn parallel_streaming_dispatch_panic_recovers_and_records_failure() {
+        let _serial = PANIC_CALLSITE_LOCK.lock().await;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         for line in make_lines(1) {
             tx.send(line).unwrap();
@@ -1489,6 +1497,7 @@ mod tests {
     /// fail_count).
     #[tokio::test]
     async fn sequential_panic_counts_toward_max_errors() {
+        let _serial = PANIC_CALLSITE_LOCK.lock().await;
         let lines = make_lines(5);
         let (code, summary) = run_sequential(
             lines,
@@ -1564,5 +1573,75 @@ mod tests {
         assert_eq!(summary.ok, 0);
         assert_eq!(summary.failed, 0);
         assert_eq!(summary.skipped, 3);
+    }
+
+    /// Serializes every test that drives `execute_line`'s panic-recovery
+    /// `error!`. Concurrent first-hits of that callsite from threads with
+    /// no subscriber can win a lost-update race on tracing's per-callsite
+    /// interest cache and pin it at `Interest::never`, which silently
+    /// drops the event for the capture test below. tokio's Mutex so the
+    /// guard may be held across the tests' await points.
+    static PANIC_CALLSITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// The panic-recovery `error!` in `execute_line` carries `command` and
+    /// `panic` fields whose expressions only run when a subscriber has the
+    /// event enabled — install one and pin both the exit code and the
+    /// structured payload.
+    #[tokio::test]
+    async fn execute_line_panic_emits_error_event_with_fields() {
+        use std::sync::Mutex;
+        use tracing_subscriber::fmt::MakeWriter;
+
+        let _serial = PANIC_CALLSITE_LOCK.lock().await;
+
+        #[derive(Clone)]
+        struct Buf(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Buf {
+            type Writer = Buf;
+            fn make_writer(&'a self) -> Buf {
+                self.clone()
+            }
+        }
+
+        let sink = Buf(Arc::new(Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(sink.clone())
+            .with_max_level(tracing::Level::ERROR)
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        // Repair any `Interest::never` a concurrent pre-lock first-hit may
+        // have cached for the panic-recovery callsite before our
+        // subscriber registered.
+        tracing::callsite::rebuild_interest_cache();
+
+        let line = make_lines(1).remove(0);
+        let dispatch = panicking_dispatch();
+        let (line_no, code) = execute_line(line, &dispatch).await;
+
+        assert_eq!(line_no, 1);
+        assert_eq!(code, EXIT_CODE_PANIC);
+        let output = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("subcommand panicked"),
+            "expected the panic event; got: {output}"
+        );
+        assert!(
+            output.contains("create-bucket"),
+            "expected the command field; got: {output}"
+        );
+        assert!(
+            output.contains("synthetic panic for test"),
+            "expected the panic message field; got: {output}"
+        );
     }
 }

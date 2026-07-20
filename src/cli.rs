@@ -145,6 +145,30 @@ pub struct Cli {
     pub command: Option<Cmd>,
 }
 
+/// Upper bound on `batch-run --parallel`. An unbounded worker count has two
+/// failure modes: `tokio::sync::Semaphore::new` panics — aborting the whole
+/// process with exit 101 — once the value exceeds `usize::MAX >> 3`, and even
+/// a large-but-valid value would spawn that many concurrent dispatch tasks,
+/// exhausting file descriptors / connections. 1024 concurrent whole-subcommand
+/// executions is already far beyond any practical batch workload (each line
+/// may itself be a multi-worker transfer), so the cap stays generous while
+/// keeping the knob safe. `0` (use all logical CPUs) is always accepted.
+pub(crate) const MAX_PARALLEL: usize = 1024;
+
+/// Value parser for `--parallel`. Accepts `0..=MAX_PARALLEL`, rejecting an
+/// oversized or non-numeric value at clap parse time (clean exit 2) rather
+/// than letting it reach `Semaphore::new` and panic (exit 101). Mirrors the
+/// custom-parser style used for `presign --expires-in` upstream.
+fn parse_parallel(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|_| format!("invalid value '{s}': expected an integer in 0..={MAX_PARALLEL}"))?;
+    if n > MAX_PARALLEL {
+        return Err(format!("--parallel must be no more than {MAX_PARALLEL}"));
+    }
+    Ok(n)
+}
+
 #[derive(clap::Args, Clone, Debug)]
 pub struct BatchRunArgs {
     /// Path to a script file with s7cmd commands, or `-` to read from stdin.
@@ -152,8 +176,10 @@ pub struct BatchRunArgs {
     pub script: String,
 
     /// Number of commands to run concurrently. 1 = sequential (default).
-    /// 0 = use all logical CPUs.
-    #[arg(long, default_value_t = 1, value_name = "N")]
+    /// 0 = use all logical CPUs. Must be no more than 1024;
+    /// an oversized value is rejected at parse time rather than panicking the
+    /// tokio semaphore.
+    #[arg(long, default_value_t = 1, value_name = "N", value_parser = parse_parallel)]
     pub parallel: usize,
 
     /// Execute commands as they are read from stdin (no progress bar).
@@ -406,8 +432,13 @@ pub enum Cmd {
 ///
 /// `hide(true)` alone only suppresses the flag from `--help`. clap_complete
 /// does not honor `hide(true)` for args, so we additionally clear the long
-/// name to keep it out of generated completion scripts. The arg id stays
-/// so `FromArgMatches` still derives `auto_complete_shell: None` cleanly;
+/// name to keep it out of generated completion scripts, and clear the env
+/// source: upstream declares the arg with `env`, so an exported
+/// `AUTO_COMPLETE_SHELL` would otherwise still populate it and fire its
+/// clap side effects (`default_value_if` defaulting sync source/target to
+/// `s3://ignored`, `required_unless_present` lifting required util targets)
+/// even though dispatch ignores the parsed value. With both cleared, the
+/// arg id stays and `FromArgMatches` derives `auto_complete_shell: None`;
 /// users who want completions use the top-level `--auto-complete-shell`.
 #[allow(dead_code)] // used from main.rs; cli_routing integration test includes this file directly
 pub fn cli_command() -> clap::Command {
@@ -437,16 +468,52 @@ fn build_cli_command() -> clap::Command {
             let has_flag = sub
                 .get_arguments()
                 .any(|a| a.get_id().as_str() == "auto_complete_shell");
-            if has_flag {
+            let sub = if has_flag {
                 sub.mut_arg("auto_complete_shell", |a| {
-                    a.hide(true).long(None::<&'static str>)
+                    a.hide(true)
+                        .long(None::<&'static str>)
+                        .env(None::<&'static str>)
                 })
             } else {
                 sub
-            }
+            };
+            hide_credential_env_values(sub)
         });
     }
     cmd
+}
+
+/// Mark every env-backed credential argument `hide_env_values` so a secret
+/// exported through the environment is not echoed into `--help` output
+/// (CI logs, terminal scrollback, pasted bug reports). clap renders the
+/// current value of an arg's env var into help text by default; the env var
+/// *name* stays visible, only the value is suppressed.
+///
+/// Upstream fixes this at the derive level — s3sync PR#246, s3rm-rs PR#94,
+/// s3ls-rs PR#29, and s3util-rs PR#25 all add `hide_env_values = true` to
+/// their credential args — but those changes are not yet in the released
+/// crates s7cmd pins, so the same hardening is applied here to the built
+/// `Command` tree. Once the upstream releases catch up this becomes an
+/// idempotent no-op.
+///
+/// The id predicate matches the exact set upstream hides: access keys,
+/// secret access keys, session tokens (`*access_key*`, `*session_token*`)
+/// and SSE-C key material (`*sse_c_key*`, which also covers the
+/// `*_sse_c_key_md5` digests).
+fn hide_credential_env_values(mut sub: clap::Command) -> clap::Command {
+    let sensitive_ids: Vec<clap::Id> = sub
+        .get_arguments()
+        .filter(|a| {
+            let id = a.get_id().as_str();
+            (id.contains("access_key") || id.contains("session_token") || id.contains("sse_c_key"))
+                && a.get_env().is_some()
+        })
+        .map(|a| a.get_id().clone())
+        .collect();
+    for id in sensitive_ids {
+        sub = sub.mut_arg(id, |a| a.hide_env_values(true));
+    }
+    sub
 }
 
 #[cfg(test)]
@@ -555,5 +622,114 @@ mod tests {
             .find(|a| a.get_id().as_str() == "auto_complete_shell")
             .expect("top-level --auto-complete-shell is missing");
         assert_eq!(arg.get_long(), Some("auto-complete-shell"));
+    }
+
+    /// Every env-backed credential argument across every subcommand must be
+    /// `hide_env_values` so `--help` never echoes a secret exported through
+    /// the environment. Mirrors the upstream guard test added by s3util-rs
+    /// PR#25; here the invariant is enforced by `hide_credential_env_values`
+    /// because the released upstream crates do not yet carry their own
+    /// `hide_env_values = true` fixes (s3sync PR#246, s3rm-rs PR#94,
+    /// s3ls-rs PR#29, s3util-rs PR#25).
+    #[test]
+    fn credential_args_hide_env_values_in_every_subcommand() {
+        fn check(cmd: &clap::Command, path: &str, checked: &mut usize) {
+            for arg in cmd.get_arguments() {
+                let id = arg.get_id().as_str();
+                let sensitive = id.contains("access_key")
+                    || id.contains("session_token")
+                    || id.contains("sse_c_key");
+                if sensitive && arg.get_env().is_some() {
+                    *checked += 1;
+                    assert!(
+                        arg.is_hide_env_values_set() || arg.is_hide_env_set(),
+                        "{path} --{id}: env-backed credential arg must hide its env value in help output"
+                    );
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                check(sub, &format!("{path} {}", sub.get_name()), checked);
+            }
+        }
+
+        let cmd = cli_command();
+        let mut checked = 0;
+        check(&cmd, cmd.get_name(), &mut checked);
+        // sync and cp/mv alone contribute 10 credential args each, and the
+        // ~40 CommonClientArgs-based subcommands 3 each; a low count means
+        // the walk (or the mutation loop) went wrong.
+        assert!(checked >= 100, "only {checked} credential args found");
+    }
+
+    /// The mutation must reach the args embedded from every upstream crate,
+    /// not only s3util-rs. Spot-check one representative credential arg per
+    /// upstream parser: sync (s3sync), clean (s3rm-rs), ls (s3ls-rs), and
+    /// cp (s3util-rs) — including the SSE-C key material on sync/cp.
+    #[test]
+    fn credential_args_hidden_for_each_upstream_parser() {
+        let cmd = cli_command();
+        for (sub_name, arg_id) in [
+            ("sync", "source_access_key"),
+            ("sync", "target_sse_c_key"),
+            ("sync", "target_sse_c_key_md5"),
+            ("clean", "target_secret_access_key"),
+            ("ls", "target_session_token"),
+            ("cp", "source_sse_c_key"),
+            ("mv", "target_access_key"),
+            ("rename", "source_session_token"),
+            ("head-object", "source_sse_c_key_md5"),
+        ] {
+            let sub = cmd
+                .find_subcommand(sub_name)
+                .unwrap_or_else(|| panic!("subcommand `{sub_name}` missing"));
+            let arg = sub
+                .get_arguments()
+                .find(|a| a.get_id().as_str() == arg_id)
+                .unwrap_or_else(|| panic!("`{sub_name}` lost its `{arg_id}` arg"));
+            assert!(
+                arg.is_hide_env_values_set(),
+                "`{sub_name} --{arg_id}` must hide its env value in help output",
+            );
+        }
+    }
+
+    // ---- --parallel value parser (MAX_PARALLEL cap) ----
+    //
+    // An unbounded `--parallel` reaches `tokio::sync::Semaphore::new`, which
+    // panics (aborting the process, exit 101) once the value exceeds
+    // `usize::MAX >> 3`. `parse_parallel` rejects out-of-range input at clap
+    // parse time (exit 2) instead.
+
+    #[test]
+    fn parse_parallel_accepts_zero_one_and_max() {
+        // 0 = "all logical CPUs", 1 = sequential, MAX_PARALLEL = the ceiling.
+        assert_eq!(parse_parallel("0"), Ok(0));
+        assert_eq!(parse_parallel("1"), Ok(1));
+        assert_eq!(parse_parallel(&MAX_PARALLEL.to_string()), Ok(MAX_PARALLEL));
+    }
+
+    #[test]
+    fn parse_parallel_rejects_just_over_max() {
+        let err = parse_parallel(&(MAX_PARALLEL + 1).to_string()).unwrap_err();
+        assert!(err.contains("no more than"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_parallel_rejects_semaphore_panic_range() {
+        // tokio's Semaphore::new panics above `usize::MAX >> 3`; the value one
+        // past that boundary — and `usize::MAX` itself — must be rejected here
+        // rather than ever reaching `Semaphore::new`.
+        let boundary = (usize::MAX >> 3).wrapping_add(1);
+        assert!(parse_parallel(&boundary.to_string()).is_err());
+        assert!(parse_parallel(&usize::MAX.to_string()).is_err());
+    }
+
+    #[test]
+    fn parse_parallel_rejects_overflow_and_non_numeric() {
+        // Beyond usize::MAX → clean parse error (no overflow/panic).
+        assert!(parse_parallel("99999999999999999999999999").is_err());
+        assert!(parse_parallel("abc").is_err());
+        assert!(parse_parallel("").is_err());
+        assert!(parse_parallel("-1").is_err());
     }
 }

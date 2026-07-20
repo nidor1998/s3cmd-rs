@@ -1229,3 +1229,182 @@ fn batch_run_json_tracing_invalid_line_fields() {
         invalid["fields"]["reason"]
     );
 }
+
+/// A state-flag arg error inside a batch line must fail that line (exit 2)
+/// without killing the whole batch: upstream's validate_state_flag called
+/// process::exit(2), which bypassed per-line containment, skipped every
+/// later line, and suppressed the summary.
+#[test]
+fn batch_run_state_flag_error_does_not_kill_batch() {
+    let assert = Command::cargo_bin("s7cmd")
+        .unwrap()
+        .args(["batch-run", "--continue-on-error", "-"])
+        .write_stdin(
+            "put-bucket-versioning s3://example-bucket\n\
+             put-bucket-accelerate-configuration s3://example-bucket\n\
+             put-bucket-request-payment s3://example-bucket\n",
+        )
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr
+            .matches("one of --enabled or --suspended must be specified")
+            .count()
+            == 2,
+        "lines 1 and 2 must both report the state-flag error: {stderr}"
+    );
+    assert!(
+        stderr.contains("one of --requester or --bucket-owner must be specified"),
+        "line 3 must still run after earlier lines failed: {stderr}"
+    );
+    assert!(
+        stderr.contains("0 succeeded, 3 failed"),
+        "summary must still be printed: {stderr}"
+    );
+}
+
+/// `--check-format` must surface an over-cap line as a per-line read error
+/// (structured `read_error` event) rather than silently stopping — the
+/// sync `check_format_lines` walker has its own read-error branch,
+/// separate from the executor paths.
+#[test]
+fn batch_run_check_format_oversized_line_reports_read_error() {
+    let long_line = format!("head-bucket s3://{}\n", "a".repeat(17 * 1024));
+    Command::cargo_bin("s7cmd")
+        .unwrap()
+        .args([
+            "batch-run",
+            "--check-format",
+            "--disable-color-tracing",
+            "-",
+        ])
+        .write_stdin(long_line)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("line read error"))
+        .stderr(predicate::str::contains("read_error"));
+}
+
+/// Scripts can come from a real file, not just `-`/stdin — the file branch
+/// of `run_read_all` (open + BufReader + read_all) must behave identically
+/// to the stdin branch, including the summary.
+#[test]
+fn batch_run_script_file_executes_lines() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("batch.txt");
+    std::fs::write(
+        &script,
+        "# comment\ncreate-bucket --dry-run s3://batch-file-a\ncreate-bucket --dry-run s3://batch-file-b\n",
+    )
+    .expect("write script");
+    Command::cargo_bin("s7cmd")
+        .unwrap()
+        .args(["batch-run", script.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("2 succeeded, 0 failed"));
+}
+
+// ---- inline-credential redaction in per-line logs ----
+//
+// A batch-run line may legally carry a credential inline (e.g.
+// `--target-secret-access-key <value>`). batch-run echoes each line's raw
+// text into per-line log events; without masking, that secret is written to
+// stderr (and to `--json-tracing` JSON) on any non-success outcome — visible
+// at the default verbosity. `redact::redact_secrets` masks the value of every
+// known secret flag before logging. `RUST_LOG` is cleared so the default
+// s7cmd tracing filter applies deterministically.
+
+/// Invalid (parse-error) line → logged at error level, visible at the default
+/// verbosity. The inline secret must be masked to `****`, not echoed.
+#[test]
+fn batch_run_masks_inline_secret_in_invalid_line_log() {
+    let secret = "wJalrXUtnFEMIsupersecretVALUE0001";
+    let assert = Command::cargo_bin("s7cmd")
+        .unwrap()
+        .env_remove("RUST_LOG")
+        .args(["batch-run", "--continue-on-error", "-"])
+        .write_stdin(format!(
+            "head-bucket --target-access-key AKIAEXAMPLEID --target-secret-access-key {secret} --bogus-unknown-flag s3://b\n"
+        ))
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        !stderr.contains(secret),
+        "secret leaked into invalid-line log: {stderr}"
+    );
+    assert!(
+        stderr.contains("****"),
+        "expected redaction placeholder: {stderr}"
+    );
+    // The line stays identifiable — the subcommand token survives redaction.
+    assert!(
+        stderr.contains("head-bucket"),
+        "command context lost: {stderr}"
+    );
+}
+
+/// `--check-format` path → the invalid line is logged at error level; the
+/// inline secret must be masked there too.
+#[test]
+fn batch_run_check_format_masks_inline_secret() {
+    let secret = "wJalrXUtnFEMIsupersecretVALUE0002";
+    let assert = Command::cargo_bin("s7cmd")
+        .unwrap()
+        .env_remove("RUST_LOG")
+        .args(["batch-run", "--check-format", "-"])
+        .write_stdin(format!(
+            "head-bucket --target-access-key AKIAEXAMPLEID --target-secret-access-key {secret} --bogus-unknown-flag s3://b\n"
+        ))
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        !stderr.contains(secret),
+        "secret leaked into check-format log: {stderr}"
+    );
+    assert!(
+        stderr.contains("****"),
+        "expected redaction placeholder: {stderr}"
+    );
+}
+
+/// A successfully dispatched line logged at info level (`-v`) must also mask
+/// an inline credential. `presign` signs locally (no network), so this runs
+/// offline and exercises the `log_start` / `log_end` success path.
+#[test]
+fn batch_run_masks_inline_secret_in_success_log() {
+    let secret = "wJalrXUtnFEMIsupersecretVALUE0003";
+    let assert = Command::cargo_bin("s7cmd")
+        .unwrap()
+        .env_remove("RUST_LOG")
+        .args(["batch-run", "-v", "-"])
+        .write_stdin(format!(
+            "presign s3://bucket/key --target-access-key AKIAEXAMPLEID --target-secret-access-key {secret} --target-region us-east-1\n"
+        ))
+        .assert()
+        .success();
+    let out = assert.get_output();
+    let stderr = String::from_utf8(out.stderr.clone()).unwrap();
+    let stdout = String::from_utf8(out.stdout.clone()).unwrap();
+    assert!(
+        !stderr.contains(secret),
+        "secret leaked into info-level log: {stderr}"
+    );
+    assert!(
+        stderr.contains("****"),
+        "expected redaction placeholder: {stderr}"
+    );
+    // The presigned URL is still produced on stdout, and it never carries the
+    // secret access key (only the access key id + signature).
+    assert!(
+        stdout.contains("X-Amz-Signature"),
+        "presigned URL expected on stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains(secret),
+        "secret must never appear in the presigned URL: {stdout}"
+    );
+}

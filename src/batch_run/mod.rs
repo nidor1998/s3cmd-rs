@@ -10,6 +10,8 @@ pub mod args;
 pub mod executor;
 pub mod parser;
 pub mod progress;
+/// Mask credential values in a batch-run line before it is echoed into logs.
+mod redact;
 pub mod summary;
 pub mod validate;
 
@@ -142,7 +144,7 @@ fn check_format_lines<R: BufRead>(mut reader: R, source: &str) -> bool {
                     event = "invalid",
                     invalid_kind = "tokenize",
                     reason = e.to_string(),
-                    raw = line.trim_end(),
+                    raw = redact::redact_secrets(line.trim_end()).as_ref(),
                     "line invalid",
                 );
                 return true;
@@ -158,7 +160,7 @@ fn check_format_lines<R: BufRead>(mut reader: R, source: &str) -> bool {
                     event = "invalid",
                     invalid_kind = "parse",
                     reason = clap_error_summary(&s),
-                    raw = line.trim_end(),
+                    raw = redact::redact_secrets(line.trim_end()).as_ref(),
                     "line invalid",
                 );
                 return true;
@@ -173,7 +175,7 @@ fn check_format_lines<R: BufRead>(mut reader: R, source: &str) -> bool {
                     event = "invalid",
                     invalid_kind = "empty",
                     reason = "empty command",
-                    raw = line.trim_end(),
+                    raw = redact::redact_secrets(line.trim_end()).as_ref(),
                     "line invalid",
                 );
                 return true;
@@ -188,7 +190,7 @@ fn check_format_lines<R: BufRead>(mut reader: R, source: &str) -> bool {
                 event = "invalid",
                 invalid_kind = "validate",
                 reason = flatten(&e.to_string()),
-                raw = line.trim_end(),
+                raw = redact::redact_secrets(line.trim_end()).as_ref(),
                 "line invalid",
             );
             return true;

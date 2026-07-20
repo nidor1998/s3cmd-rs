@@ -440,6 +440,41 @@ library. For details on flags, semantics, and exit codes, refer to:
 Each of these projects (except `batch-run`) also ships its own
 standalone binary, which can be used independently of s7cmd.
 
+## Security assumptions
+
+s7cmd is built on a fundamental security assumption: **both the object storage system and the specific bucket you
+operate on must be trusted.**
+
+Within this trust model, s7cmd implements the security measures you would reasonably expect of an S3 command-line
+tool: encrypted transport (TLS/HTTPS) for data in transit, end-to-end integrity verification for transfers (ETag,
+MD5, SHA256, and CRC checksums), support for server-side encryption, secure handling of credentials through the
+standard AWS credential providers (with credential environment-variable values hidden from `--help` output), and —
+for `ls` — control-character escaping of the object keys, prefixes, and owner names returned by S3.
+These measures protect the confidentiality and integrity of your data against transport-level and accidental
+threats.
+
+However, s7cmd assumes that the storage endpoint is honest and non-adversarial — that it correctly implements the
+S3 API and returns the data, listings, metadata, and checksum values it actually stores, without tampering. Because
+subcommands decide what to transfer, list, or delete from the listings and metadata the endpoint reports, the
+integrity-verification and filtering features are **not** a defense against a malicious or compromised storage
+backend that deliberately returns falsified data, fabricated listings, or forged checksums. Against such an
+adversarial endpoint, these guarantees do not hold.
+
+Crucially, trust must extend to the **bucket**, not just the storage provider. Even when the object storage system
+itself is fully trustworthy, a bucket can still be adversarial — for example, a bucket you do not control, a shared
+bucket writable by others, or one whose objects, metadata, or checksums were crafted by an attacker. If you
+synchronize from, copy from, list, or delete from such a bucket, the data and metadata it serves are already
+untrusted at the source, and s7cmd's guarantees no longer apply. A trusted storage provider hosting an untrusted
+bucket is, for the purposes of this security model, an untrusted source.
+
+Operating on an untrusted, compromised, or non-conformant endpoint or bucket is outside s7cmd's security model.
+Selecting a trustworthy storage provider, and ensuring that every bucket you operate on is one you control or
+trust — including its credentials, encryption, and access policies — remains your responsibility.
+
+This mirrors the "Security assumptions" sections of the underlying
+[s3sync](https://github.com/nidor1998/s3sync) / [s3util-rs](https://github.com/nidor1998/s3util-rs) /
+[s3rm-rs](https://github.com/nidor1998/s3rm-rs) / [s3ls-rs](https://github.com/nidor1998/s3ls-rs) projects.
+
 ## Requirements
 
 - x86_64 Linux (kernel 3.2 or later)

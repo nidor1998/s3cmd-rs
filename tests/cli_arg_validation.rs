@@ -93,6 +93,40 @@ fn mv_missing_target_exits_2() {
     assert!(!stderr.is_empty());
 }
 
+// ---- mv self-move guard (ported from s3util-rs PR#25) ----
+//
+// mv is copy-then-delete, so moving an object onto itself would delete the
+// object the copy just wrote. The guard fires inside run_mv before any client
+// is built, so these run without AWS credentials or network — but as a
+// runtime rejection, not a clap error, the exit code is 1 (not 2).
+
+#[test]
+fn mv_self_move_identical_keys_exits_1() {
+    let (code, _stdout, stderr) =
+        run(s7cmd_cmd().args(["mv", "s3://b/dir/k.txt", "s3://b/dir/k.txt"]));
+    assert_eq!(code, Some(1), "mv onto itself must exit 1; stderr={stderr}");
+    assert!(
+        stderr.contains("onto itself"),
+        "expected the self-move rejection on stderr; got: {stderr}"
+    );
+}
+
+#[test]
+fn mv_self_move_directory_style_target_exits_1() {
+    // `mv s3://b/dir/k.txt s3://b/dir/` resolves the target to the source key
+    // by appending the basename — the same data-loss case spelled differently.
+    let (code, _stdout, stderr) = run(s7cmd_cmd().args(["mv", "s3://b/dir/k.txt", "s3://b/dir/"]));
+    assert_eq!(
+        code,
+        Some(1),
+        "directory-style self-move must exit 1; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("onto itself"),
+        "expected the self-move rejection on stderr; got: {stderr}"
+    );
+}
+
 // ---- cp --skip-existing validation (s3util-rs 1.2.0) ----
 
 #[test]
@@ -573,4 +607,144 @@ fn presign_no_args_exits_2() {
     let (code, _stdout, stderr) = run(s7cmd_cmd().arg("presign"));
     assert_eq!(code, Some(2));
     assert!(!stderr.is_empty());
+}
+
+// ---- AUTO_COMPLETE_SHELL env var ----
+//
+// The per-subcommand --auto-complete-shell arg is stripped of both its long
+// name and its env source by build_cli_command (only the top-level flag
+// remains). Upstream declares the arg with `env`, so without the env-source
+// stripping an exported AUTO_COMPLETE_SHELL would silently re-arm the hidden
+// arg and fire its clap side effects: sync source/target defaulted to
+// s3://ignored, required util targets no longer required.
+
+#[test]
+fn auto_complete_shell_env_does_not_lift_required_target() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd()
+        .arg("get-bucket-versioning")
+        .env("AUTO_COMPLETE_SHELL", "bash"));
+    assert_eq!(
+        code,
+        Some(2),
+        "env var must not satisfy the required target; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("required"),
+        "expected missing-required parse error; got: {stderr}"
+    );
+}
+
+#[test]
+fn auto_complete_shell_env_does_not_default_sync_paths() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd().arg("sync").env("AUTO_COMPLETE_SHELL", "bash"));
+    assert_eq!(
+        code,
+        Some(2),
+        "sync must still require source/target with the env var set; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("source"),
+        "expected missing source error; got: {stderr}"
+    );
+}
+
+#[test]
+fn auto_complete_shell_env_invalid_value_is_ignored() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd()
+        .arg("get-bucket-versioning")
+        .env("AUTO_COMPLETE_SHELL", "not-a-shell"));
+    assert_eq!(code, Some(2));
+    assert!(
+        stderr.to_lowercase().contains("required") && !stderr.contains("invalid value"),
+        "env value must be ignored entirely, not parsed; got: {stderr}"
+    );
+}
+
+#[test]
+fn auto_complete_shell_env_does_not_default_clean_target() {
+    // s3rm-rs's target carries the same default_value_if — without the env
+    // stripping, `clean` with no target would proceed toward a real deletion
+    // pipeline against s3://ignored instead of failing validation.
+    let (code, _stdout, stderr) = run(s7cmd_cmd().arg("clean").env("AUTO_COMPLETE_SHELL", "bash"));
+    assert_eq!(
+        code,
+        Some(2),
+        "clean must still require a target with the env var set; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("required"),
+        "expected missing target error; got: {stderr}"
+    );
+}
+
+#[test]
+fn auto_complete_shell_env_does_not_lift_cp_paths() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd().arg("cp").env("AUTO_COMPLETE_SHELL", "bash"));
+    assert_eq!(
+        code,
+        Some(2),
+        "cp must still require source/target with the env var set; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("required"),
+        "expected missing source/target error; got: {stderr}"
+    );
+}
+
+// ---- batch-run --parallel upper bound ----
+//
+// `--parallel` is capped at MAX_PARALLEL (1024). An oversized or overflowing
+// value must be rejected at clap parse time (exit 2), never reaching
+// `tokio::sync::Semaphore::new`, which panics (aborting with exit 101) once
+// the worker count exceeds `usize::MAX >> 3`. `s7cmd_cmd` closes stdin and the
+// parse error fires before any script read, so the `-` positional never blocks.
+
+#[test]
+fn batch_run_parallel_over_cap_exits_2() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd().args(["batch-run", "--parallel", "100000", "-"]));
+    assert_eq!(
+        code,
+        Some(2),
+        "oversized --parallel must be a clean parse error; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("no more than")
+            || stderr.to_lowercase().contains("parallel"),
+        "expected a --parallel range error; got: {stderr}"
+    );
+}
+
+#[test]
+fn batch_run_parallel_semaphore_panic_value_exits_2_not_101() {
+    // `usize::MAX >> 3` is tokio's Semaphore::MAX_PERMITS; one past it is the
+    // smallest value that used to panic `Semaphore::new` (exit 101).
+    let huge = (usize::MAX >> 3).wrapping_add(1).to_string();
+    let (code, _stdout, stderr) = run(s7cmd_cmd().args(["batch-run", "--parallel", &huge, "-"]));
+    assert_eq!(
+        code,
+        Some(2),
+        "must be a clean exit 2, not a panic; stderr={stderr}"
+    );
+}
+
+#[test]
+fn batch_run_parallel_overflow_value_exits_2() {
+    // Larger than usize::MAX → must fail to parse cleanly, not overflow/panic.
+    let (code, _stdout, _stderr) =
+        run(s7cmd_cmd().args(["batch-run", "--parallel", "99999999999999999999999999", "-"]));
+    assert_eq!(code, Some(2));
+}
+
+#[test]
+fn batch_run_parallel_at_cap_is_accepted() {
+    // MAX_PARALLEL (1024) itself must parse and run: with the closed stdin of
+    // `s7cmd_cmd` the run completes with a 0-command summary (exit 0), and
+    // `Semaphore::new(1024)` does not panic. Guards against an off-by-one that
+    // would reject the documented maximum.
+    let (code, _stdout, stderr) = run(s7cmd_cmd().args(["batch-run", "--parallel", "1024", "-"]));
+    assert_eq!(
+        code,
+        Some(0),
+        "MAX_PARALLEL must be accepted and run; stderr={stderr}"
+    );
 }

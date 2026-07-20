@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Ports the applicable fixes from s3sync [PR#246](https://github.com/nidor1998/s3sync/pull/246) /
+[PR#245](https://github.com/nidor1998/s3sync/pull/245), s3rm-rs
+[PR#94](https://github.com/nidor1998/s3rm-rs/pull/94), s3ls-rs
+[PR#29](https://github.com/nidor1998/s3ls-rs/pull/29), and s3util-rs
+[PR#25](https://github.com/nidor1998/s3util-rs/pull/25) into s7cmd's own code
+(the CLI builder and the vendored bin runners). It also includes two independent hardening fixes to s7cmd's own
+`batch-run` / CLI code found in a security review — inline-credential redaction in per-line logs, and a `--parallel`
+upper bound (see **Security** and **Fixed › batch-run** below).
+
+### Security
+
+- Credential-related command line options no longer display their values in `--help` output when set via environment
+  variables, on every subcommand: access keys, secret access keys, session tokens (`*_ACCESS_KEY`,
+  `*_SECRET_ACCESS_KEY`, `*_SESSION_TOKEN`), and SSE-C key material (`*_SSE_C_KEY`, `*_SSE_C_KEY_MD5`). The
+  environment-variable names are still shown. Upstream fixes this in the (unreleased) mains of all four libraries;
+  until those ship in released crates, s7cmd enforces the same `hide_env_values` marking when it builds its clap
+  command tree, which becomes an idempotent no-op once the upstream releases catch up.
+- `batch-run` no longer echoes inline credential values from a script line into its logs. A per-line command may
+  legally carry a credential on the command line (`--target-secret-access-key`, `--source-secret-access-key`,
+  `--*-access-key`, `--*-session-token`, `--*-sse-c-key`, `--*-sse-c-key-md5`); batch-run logs each line's raw text as
+  the `raw` field on per-line events, and the `warning` / `failure` / `invalid` / `panicked` events are emitted at the
+  default verbosity (and, with `--json-tracing`, into machine-readable JSON). The value of every such credential flag —
+  the same set hidden from `--help` above — is now masked to `****` before the line is logged; a line carrying no
+  credential is logged unchanged.
+
+### Fixed
+
+#### cp / mv (ported from s3util-rs PR#25 into the vendored runner)
+
+- A transfer-worker failure that cancels the internal pipeline (e.g. a failed chunk download or a stdout write error
+  during parallel S3-to-stdout downloads) is now reported as a failure (exit code 1) with its error logged, instead of
+  being misreported as a user cancellation (exit code 130) with the error message suppressed. A genuine SIGINT still
+  exits 130.
+- A local target directory spelled with a trailing forward slash (e.g. `out/`) now resolves to `out/<basename>` on
+  Windows as well. Previously the `/` form was only recognized on Unix, so on Windows the storage layer treated the
+  literal key `out/` as a directory and silently wrote nothing (and `mv` would then delete the source).
+- `mv` now rejects moving an S3 object onto itself (`mv s3://b/k s3://b/k`, including directory-style and bucket-only
+  spellings that resolve to the source key). `mv` is copy-then-delete, so a self-move deleted the object it had just
+  written on an unversioned bucket — and still exited 0. Moves between different endpoints with equal bucket/key names
+  are still allowed, and an explicit `--source-version-id` (other than `null`) is still accepted as a
+  version-promotion operation.
+
+#### put-bucket-lifecycle-configuration (adapted from s3util-rs PR#25)
+
+- A top-level `TransitionDefaultMinimumObjectSize` key in the input JSON — as produced by
+  `get-bucket-lifecycle-configuration` — is now rejected with guidance instead of being silently dropped. S3 accepts
+  the value only as a request parameter, never inside the configuration document, so silently dropping it reset a
+  bucket configured with `varies_by_storage_class` back to S3's default of `all_storage_classes_128K` on a
+  get-edit-put roundtrip. (Upstream additionally gains a `--transition-default-minimum-object-size` option; that flag
+  arrives in s7cmd with the next s3util-rs release.)
+
+#### batch-run
+
+- `batch-run --parallel` now rejects a value greater than 1024 at parse time (a clean exit 2) instead of accepting an
+  arbitrarily large worker count. A value above `usize::MAX >> 3` reached `tokio::sync::Semaphore::new` and panicked,
+  aborting the whole run with exit 101 before any line executed; the bound also stops an oversized-but-valid value from
+  spawning a runaway number of concurrent commands (file-descriptor / connection exhaustion). `--parallel 0` (use all
+  logical CPUs) is still accepted.
+
+### Documentation
+
+- Added a "Security assumptions" section to the README, mirroring the sections the upstream PRs added to the
+  s3sync / s3util-rs / s3rm-rs / s3ls-rs READMEs.
+
+### Pending upstream releases
+
+The remaining fixes in the referenced PRs live in the upstream *library* code that s7cmd consumes from crates.io
+(`s3sync = 1.59.0`, `s3util-rs = 1.7.1`, `s3rm-rs = 1.3.8`, `s3ls-rs = 1.0.3`), so they reach s7cmd automatically
+when the upstream crates publish releases containing them and the pins are bumped. Notably: `ONEZONE_IA` naming in
+`--storage-class` help/errors, stable same-second object-version replay ordering, SSE-C ETag source parameters,
+delete-marker size/ETag panics, `Expires`/`expiry-date` parse hardening, stricter S3-path and `--metadata`
+validation, annotation-API force-retry (s3sync PR#245); suspended-versioning buckets treated as versioned and
+delete-marker exclusion from attribute filters in `clean` (s3rm-rs PR#94); `--max-parallel-listings` leaf-scan
+enforcement and exact `--rate-limit-api` rates in `ls` (s3ls-rs PR#29); `--target-request-payer` wiring,
+`--transition-default-minimum-object-size`, transfer-verification hardening, and stricter input-JSON validation
+(`deny_unknown_fields`) in the `cp`/`mv`/bucket-admin family (s3util-rs PR#25).
+
 ## [1.5.0] - 2026-07-11
 
 ### Added

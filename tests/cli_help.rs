@@ -607,3 +607,131 @@ fn version_long_flag_prints_pkg_version() {
         .success()
         .stdout(predicate::str::contains(expected));
 }
+
+// ---------------------------------------------------------------------------
+// Security: credential env values must not leak into --help output.
+//
+// clap renders the current value of an env-backed arg into help text unless
+// the arg is marked hide_env_values. Upstream adds that marker at the derive
+// level (s3sync PR#246, s3rm-rs PR#94, s3ls-rs PR#29, s3util-rs PR#25); until
+// those land in released crates, s7cmd enforces it in cli::build_cli_command.
+// These tests drive the real binary with secrets in the process environment —
+// one subcommand per upstream parser — and assert the values never appear
+// while the env var *names* still do.
+// ---------------------------------------------------------------------------
+
+/// Run `s7cmd <sub> --help` with credential env vars set; assert every
+/// (name, value) pair shows the name but never the value. A non-secret
+/// control var proves clap really does render env values at help time —
+/// without it, a clap behavior change could green these tests vacuously.
+fn assert_help_hides_credential_values(sub: &str, vars: &[(&str, &str)]) {
+    let mut cmd = Command::cargo_bin("s7cmd").unwrap();
+    cmd.args([sub, "--help"]);
+    for (name, value) in vars {
+        cmd.env(name, value);
+    }
+    // Control: TARGET_REGION is env-backed on every subcommand under test
+    // and is not a secret, so its value must render into help output.
+    cmd.env("TARGET_REGION", "us-west-2");
+
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+
+    assert!(
+        stdout.contains("us-west-2"),
+        "{sub}: expected the non-secret TARGET_REGION value in help output \
+         (control that env values render at all)"
+    );
+    for (name, value) in vars {
+        assert!(
+            stdout.contains(name),
+            "{sub}: env var name {name} should still appear in help"
+        );
+        assert!(
+            !stdout.contains(value),
+            "{sub}: credential value for {name} leaked into --help output"
+        );
+    }
+}
+
+#[test]
+fn sync_help_hides_credential_env_values() {
+    assert_help_hides_credential_values(
+        "sync",
+        &[
+            ("SOURCE_ACCESS_KEY", "AKIA_sync_should_not_appear"),
+            ("SOURCE_SECRET_ACCESS_KEY", "SECRET_sync_should_not_appear"),
+            ("SOURCE_SESSION_TOKEN", "TOKEN_sync_should_not_appear"),
+            ("TARGET_ACCESS_KEY", "AKIA_sync_tgt_should_not_appear"),
+            (
+                "TARGET_SECRET_ACCESS_KEY",
+                "SECRET_sync_tgt_should_not_appear",
+            ),
+            ("TARGET_SESSION_TOKEN", "TOKEN_sync_tgt_should_not_appear"),
+            ("SOURCE_SSE_C_KEY", "SSECKEY_sync_should_not_appear"),
+            ("SOURCE_SSE_C_KEY_MD5", "SSECMD5_sync_should_not_appear"),
+            ("TARGET_SSE_C_KEY", "SSECKEY_sync_tgt_should_not_appear"),
+            ("TARGET_SSE_C_KEY_MD5", "SSECMD5_sync_tgt_should_not_appear"),
+        ],
+    );
+}
+
+#[test]
+fn clean_help_hides_credential_env_values() {
+    assert_help_hides_credential_values(
+        "clean",
+        &[
+            ("TARGET_ACCESS_KEY", "AKIA_clean_should_not_appear"),
+            ("TARGET_SECRET_ACCESS_KEY", "SECRET_clean_should_not_appear"),
+            ("TARGET_SESSION_TOKEN", "TOKEN_clean_should_not_appear"),
+        ],
+    );
+}
+
+#[test]
+fn ls_help_hides_credential_env_values() {
+    assert_help_hides_credential_values(
+        "ls",
+        &[
+            ("TARGET_ACCESS_KEY", "AKIA_ls_should_not_appear"),
+            ("TARGET_SECRET_ACCESS_KEY", "SECRET_ls_should_not_appear"),
+            ("TARGET_SESSION_TOKEN", "TOKEN_ls_should_not_appear"),
+        ],
+    );
+}
+
+#[test]
+fn cp_help_hides_credential_env_values() {
+    assert_help_hides_credential_values(
+        "cp",
+        &[
+            ("SOURCE_ACCESS_KEY", "AKIA_cp_should_not_appear"),
+            ("SOURCE_SECRET_ACCESS_KEY", "SECRET_cp_should_not_appear"),
+            ("SOURCE_SESSION_TOKEN", "TOKEN_cp_should_not_appear"),
+            ("TARGET_ACCESS_KEY", "AKIA_cp_tgt_should_not_appear"),
+            (
+                "TARGET_SECRET_ACCESS_KEY",
+                "SECRET_cp_tgt_should_not_appear",
+            ),
+            ("TARGET_SESSION_TOKEN", "TOKEN_cp_tgt_should_not_appear"),
+            ("SOURCE_SSE_C_KEY", "SSECKEY_cp_should_not_appear"),
+            ("SOURCE_SSE_C_KEY_MD5", "SSECMD5_cp_should_not_appear"),
+            ("TARGET_SSE_C_KEY", "SSECKEY_cp_tgt_should_not_appear"),
+            ("TARGET_SSE_C_KEY_MD5", "SSECMD5_cp_tgt_should_not_appear"),
+        ],
+    );
+}
+
+#[test]
+fn head_object_help_hides_credential_env_values() {
+    assert_help_hides_credential_values(
+        "head-object",
+        &[
+            ("TARGET_ACCESS_KEY", "AKIA_ho_should_not_appear"),
+            ("TARGET_SECRET_ACCESS_KEY", "SECRET_ho_should_not_appear"),
+            ("TARGET_SESSION_TOKEN", "TOKEN_ho_should_not_appear"),
+            ("SOURCE_SSE_C_KEY", "SSECKEY_ho_should_not_appear"),
+            ("SOURCE_SSE_C_KEY_MD5", "SSECMD5_ho_should_not_appear"),
+        ],
+    );
+}

@@ -1,17 +1,100 @@
 // Vendored from s3util-rs@1.1.0
 //   src/bin/s3util/cli/mv.rs
 // Adjustments: stripped #[cfg(test)] mod tests; rewrote crate::cli → super
+// Includes the self-move guard ported from s3util-rs PR#25 (post-1.7.1):
+//   check_not_self_move rejects `mv` onto the same S3 object before the copy
+//   runs (copy-then-delete would destroy the object on an unversioned bucket).
 
 use anyhow::{Result, anyhow};
 use tracing::{error, info};
 
 use s3util_rs::Config;
+use s3util_rs::types::StoragePath;
 
-use super::{CopyPhase, ExitStatus, run_copy_phase};
+use super::{CopyPhase, ExitStatus, extract_keys, run_copy_phase};
 
 pub async fn run_mv(config: Config) -> Result<ExitStatus> {
+    check_not_self_move(&config)?;
+
     let phase = run_copy_phase(config.clone()).await?;
     apply_mv_decision_tree(config, phase).await
+}
+
+/// Reject `mv` when source and target resolve to the same S3 object.
+///
+/// `mv` is copy-then-delete, so a self-move deletes what the copy just wrote.
+/// On an unversioned bucket that destroys the object outright and still exits 0;
+/// on a versioned bucket it survives only because the delete happens to target
+/// the pre-copy version. The target key is resolved the same way the transfer
+/// resolves it, so directory-style targets are caught too:
+/// `mv s3://b/dir/file s3://b/dir/` resolves to the source key itself.
+///
+/// Two escapes keep legitimate moves working:
+/// - Different source/target endpoints are different services, where equal
+///   bucket and key names still name two distinct objects (e.g. migrating
+///   between two MinIO instances that share a bucket name). Credentials and
+///   profiles are deliberately NOT compared: two profiles can address the
+///   same object, and the guard must still fire then.
+/// - An explicit `--source-version-id` turns the same-key `mv` into "promote
+///   that version": the copy publishes it as the newest version and the
+///   delete removes only the copied version, so nothing is destroyed. The
+///   `null` pseudo-version is excluded — on an unversioned or suspended
+///   bucket the copy overwrites the `null` version itself, and the delete
+///   would then remove the object the copy just wrote.
+///
+/// Checked before the copy runs, so nothing is transferred or deleted.
+fn check_not_self_move(config: &Config) -> Result<()> {
+    let (
+        StoragePath::S3 {
+            bucket: source_bucket,
+            ..
+        },
+        StoragePath::S3 {
+            bucket: target_bucket,
+            ..
+        },
+    ) = (&config.source, &config.target)
+    else {
+        return Ok(());
+    };
+
+    if source_bucket != target_bucket {
+        return Ok(());
+    }
+
+    // Endpoint comparison is textual and best-effort: two spellings of the
+    // same endpoint make the guard err on the side of allowing the move.
+    let source_endpoint = config
+        .source_client_config
+        .as_ref()
+        .and_then(|c| c.endpoint_url.as_deref());
+    let target_endpoint = config
+        .target_client_config
+        .as_ref()
+        .and_then(|c| c.endpoint_url.as_deref());
+    if source_endpoint != target_endpoint {
+        return Ok(());
+    }
+
+    let (source_key, target_key) = extract_keys(config)?;
+    if source_key != target_key {
+        return Ok(());
+    }
+
+    if config
+        .version_id
+        .as_deref()
+        .is_some_and(|version_id| version_id != "null")
+    {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "cannot mv an object onto itself: source and target both resolve to \
+         s3://{source_bucket}/{source_key}. mv is copy-then-delete, so this \
+         would delete the object it just wrote; use cp to rewrite an object \
+         in place"
+    ))
 }
 
 async fn apply_mv_decision_tree(config: Config, phase: CopyPhase) -> Result<ExitStatus> {
@@ -103,14 +186,19 @@ mod tests {
     use aws_sdk_s3::operation::put_object::PutObjectOutput;
     use aws_sdk_s3::operation::put_object_tagging::PutObjectTaggingOutput;
     use aws_sdk_s3::types::{ChecksumMode, ObjectPart, Tagging};
+    use aws_smithy_types::checksum_config::RequestChecksumCalculation;
     use leaky_bucket::RateLimiter;
-    use s3util_rs::config::TransferConfig;
+    use s3util_rs::config::{CLITimeoutConfig, ClientConfig, RetryConfig, TransferConfig};
     use s3util_rs::storage::{Storage, StorageTrait};
     use s3util_rs::transfer::TransferOutcome;
     use s3util_rs::types::token::{PipelineCancellationToken, create_pipeline_cancellation_token};
-    use s3util_rs::types::{ObjectChecksum, SseCustomerKey, StoragePath, SyncStatistics};
+    use s3util_rs::types::{
+        ClientConfigLocation, ObjectChecksum, S3Credentials, SseCustomerKey, StoragePath,
+        SyncStatistics,
+    };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+    use tokio::sync::Semaphore;
 
     type DeleteCall = (String, Option<String>);
 
@@ -353,6 +441,264 @@ mod tests {
             cancelled,
             has_warning,
         }
+    }
+
+    /// `mv s3://b/k s3://b/k` is copy-then-delete onto the same object, which
+    /// destroys it on an unversioned bucket. It must be rejected before the
+    /// copy runs.
+    #[test]
+    fn self_move_identical_keys_is_rejected() {
+        let mut config = minimal_config();
+        config.source = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "dir/file.txt".to_string(),
+        };
+        config.target = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "dir/file.txt".to_string(),
+        };
+
+        let err = check_not_self_move(&config).expect_err("self-move must be rejected");
+        assert!(
+            err.to_string().contains("onto itself"),
+            "error must explain the self-move, got: {err}"
+        );
+    }
+
+    /// The directory-style form resolves to the source key by appending the
+    /// basename, so it is the same data-loss case spelled differently.
+    #[test]
+    fn self_move_via_directory_style_target_is_rejected() {
+        let mut config = minimal_config();
+        config.source = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "dir/file.txt".to_string(),
+        };
+        config.target = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "dir/".to_string(),
+        };
+
+        assert!(
+            check_not_self_move(&config).is_err(),
+            "`mv s3://b/dir/file.txt s3://b/dir/` resolves to the source key and must be rejected"
+        );
+    }
+
+    /// `mv s3://b/file.txt s3://b` — a bucket-only target resolves by appending
+    /// the source basename, which for a root-level source is the source key.
+    #[test]
+    fn self_move_via_bucket_only_target_is_rejected() {
+        let mut config = minimal_config();
+        config.source = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "file.txt".to_string(),
+        };
+        config.target = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: String::new(),
+        };
+
+        assert!(
+            check_not_self_move(&config).is_err(),
+            "`mv s3://b/file.txt s3://b` resolves to the source key and must be rejected"
+        );
+    }
+
+    /// The same bucket-only target is a legitimate move when the source lives in
+    /// a subdirectory — it relocates the object to the bucket root.
+    #[test]
+    fn bucket_only_target_from_subdirectory_is_allowed() {
+        let mut config = minimal_config();
+        config.source = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "dir/file.txt".to_string(),
+        };
+        config.target = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: String::new(),
+        };
+
+        assert!(
+            check_not_self_move(&config).is_ok(),
+            "moving dir/file.txt to the bucket root is a genuine move"
+        );
+    }
+
+    #[test]
+    fn genuine_moves_are_allowed() {
+        // Same bucket, different key.
+        let mut config = minimal_config();
+        config.source = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "a.txt".to_string(),
+        };
+        config.target = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "b.txt".to_string(),
+        };
+        assert!(check_not_self_move(&config).is_ok());
+
+        // Same key, different bucket.
+        config.target = StoragePath::S3 {
+            bucket: "other".to_string(),
+            prefix: "a.txt".to_string(),
+        };
+        assert!(check_not_self_move(&config).is_ok());
+
+        // Directory-style target that resolves to a different key.
+        config.target = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "dir/".to_string(),
+        };
+        assert!(check_not_self_move(&config).is_ok());
+
+        // Non-S3 target is never a self-move.
+        config.target = StoragePath::Local(PathBuf::from("/tmp/a.txt"));
+        assert!(check_not_self_move(&config).is_ok());
+
+        // Stdio on either side is never a self-move (rejected earlier by clap,
+        // but the guard must not misfire or panic on it).
+        config.target = StoragePath::Stdio;
+        assert!(check_not_self_move(&config).is_ok());
+        config.source = StoragePath::Stdio;
+        config.target = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "a.txt".to_string(),
+        };
+        assert!(check_not_self_move(&config).is_ok());
+
+        // Local source to S3 target — different storage kinds, never a self-move.
+        config.source = StoragePath::Local(PathBuf::from("/tmp/a.txt"));
+        assert!(check_not_self_move(&config).is_ok());
+    }
+
+    /// A `ClientConfig` that matters to `check_not_self_move` only through its
+    /// `endpoint_url`; every other field is a neutral default.
+    fn client_config_with_endpoint(endpoint_url: Option<&str>) -> ClientConfig {
+        ClientConfig {
+            client_config_location: ClientConfigLocation {
+                aws_config_file: None,
+                aws_shared_credentials_file: None,
+            },
+            credential: S3Credentials::FromEnvironment,
+            region: None,
+            endpoint_url: endpoint_url.map(String::from),
+            force_path_style: false,
+            accelerate: false,
+            request_payer: None,
+            retry_config: RetryConfig {
+                aws_max_attempts: 1,
+                initial_backoff_milliseconds: 0,
+            },
+            cli_timeout_config: CLITimeoutConfig {
+                operation_timeout_milliseconds: None,
+                operation_attempt_timeout_milliseconds: None,
+                connect_timeout_milliseconds: None,
+                read_timeout_milliseconds: None,
+            },
+            disable_stalled_stream_protection: false,
+            request_checksum_calculation: RequestChecksumCalculation::WhenRequired,
+            parallel_upload_semaphore: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    /// Source and target spelling the same object: `s3://b/dir/file.txt` on
+    /// both sides.
+    fn self_move_shaped_config() -> Config {
+        let mut config = minimal_config();
+        config.source = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "dir/file.txt".to_string(),
+        };
+        config.target = StoragePath::S3 {
+            bucket: "b".to_string(),
+            prefix: "dir/file.txt".to_string(),
+        };
+        config
+    }
+
+    /// The same bucket and key on two different endpoints are two distinct
+    /// objects — e.g. migrating between two MinIO instances that share a
+    /// bucket name — so the guard must not fire across endpoints.
+    #[test]
+    fn same_names_on_different_endpoints_are_not_a_self_move() {
+        let mut config = self_move_shaped_config();
+        config.source_client_config =
+            Some(client_config_with_endpoint(Some("http://old-storage:9000")));
+        config.target_client_config =
+            Some(client_config_with_endpoint(Some("http://new-storage:9000")));
+
+        assert!(
+            check_not_self_move(&config).is_ok(),
+            "equal bucket/key names on two different endpoints are two different objects"
+        );
+    }
+
+    /// One side on AWS (no endpoint override), the other on a custom endpoint:
+    /// different services as well.
+    #[test]
+    fn same_names_with_one_custom_endpoint_are_not_a_self_move() {
+        let mut config = self_move_shaped_config();
+        config.source_client_config = Some(client_config_with_endpoint(None));
+        config.target_client_config = Some(client_config_with_endpoint(Some("http://minio:9000")));
+
+        assert!(check_not_self_move(&config).is_ok());
+    }
+
+    /// Equal explicit endpoints are the same service, so the guard must still
+    /// fire — the endpoint escape must not swallow the actual data-loss case.
+    /// Credentials are deliberately not consulted: two different profiles can
+    /// address the same object.
+    #[test]
+    fn self_move_on_the_same_explicit_endpoint_is_still_rejected() {
+        let mut config = self_move_shaped_config();
+        config.source_client_config = Some(client_config_with_endpoint(Some("http://minio:9000")));
+        config.target_client_config = Some(client_config_with_endpoint(Some("http://minio:9000")));
+
+        assert!(check_not_self_move(&config).is_err());
+    }
+
+    /// An explicit `--source-version-id` makes the same-key mv the "promote a
+    /// version" operation: the copy publishes that version as the newest one
+    /// and the delete removes only the copied version
+    /// (`apply_mv_decision_tree` resolves the delete's version-id from
+    /// `config.version_id` first), so nothing is destroyed.
+    #[test]
+    fn self_move_with_explicit_version_id_is_allowed_as_version_promotion() {
+        let mut config = self_move_shaped_config();
+        config.version_id = Some("3sL4kqtJlcpXroDTDmJ+rmSpXd3dIbrHY".to_string());
+
+        assert!(check_not_self_move(&config).is_ok());
+    }
+
+    /// ...except the `null` pseudo-version: on an unversioned or suspended
+    /// bucket the copy overwrites the `null` version itself, so the delete
+    /// would remove the object the copy just wrote — the original hazard.
+    #[test]
+    fn self_move_with_null_pseudo_version_is_still_rejected() {
+        let mut config = self_move_shaped_config();
+        config.version_id = Some("null".to_string());
+
+        assert!(check_not_self_move(&config).is_err());
+    }
+
+    /// The guard must be wired into `run_mv` itself, not merely exist as a
+    /// helper: a self-move config errors out of `run_mv` before
+    /// `run_copy_phase` builds any client or touches the network. (The tests
+    /// above call `check_not_self_move` directly; this one would keep passing
+    /// only while `run_mv` still invokes it first.)
+    #[tokio::test]
+    async fn run_mv_rejects_self_move_before_any_transfer() {
+        let config = self_move_shaped_config();
+
+        let err = Box::pin(run_mv(config))
+            .await
+            .expect_err("run_mv must reject a self-move before transferring");
+        assert!(
+            err.to_string().contains("onto itself"),
+            "error must be the self-move rejection, got: {err}"
+        );
     }
 
     #[tokio::test]

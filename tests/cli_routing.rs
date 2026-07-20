@@ -591,3 +591,42 @@ fn parses_batch_run_with_parallel_streaming_continue() {
     assert!(args.no_summary);
     assert_eq!(args.script, "-");
 }
+
+/// The per-subcommand --auto-complete-shell inherited from the upstream args
+/// structs must be fully disarmed on every subcommand: hidden from help, no
+/// long name (clap_complete ignores hide(true)), and no env source — an
+/// exported AUTO_COMPLETE_SHELL would otherwise re-arm the hidden arg and
+/// fire its clap side effects (default_value_if on sync/clean paths,
+/// required_unless_present on util targets). Only the top-level
+/// --auto-complete-shell remains user-visible.
+#[test]
+fn per_subcommand_auto_complete_shell_is_fully_disarmed() {
+    let cmd = cli::cli_command();
+    let mut seen = 0;
+    for sub in cmd.get_subcommands() {
+        for arg in sub.get_arguments() {
+            if arg.get_id().as_str() == "auto_complete_shell" {
+                seen += 1;
+                assert!(
+                    arg.is_hide_set(),
+                    "{}: --auto-complete-shell not hidden",
+                    sub.get_name()
+                );
+                assert!(
+                    arg.get_long().is_none(),
+                    "{}: --auto-complete-shell long name still set",
+                    sub.get_name()
+                );
+                assert!(
+                    arg.get_env().is_none(),
+                    "{}: --auto-complete-shell env source still set",
+                    sub.get_name()
+                );
+            }
+        }
+    }
+    assert!(
+        seen > 30,
+        "expected the inherited flag on most subcommands, saw only {seen}"
+    );
+}

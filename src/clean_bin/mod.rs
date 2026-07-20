@@ -11,6 +11,10 @@
 //              exit code 2 on Err instead. run() now returns Result<i32>
 //              instead of calling std::process::exit (so it can be invoked
 //              from batch-run without killing the process mid-batch).
+//              "Deletion cancelled." made EPIPE-safe (a bare eprintln!
+//              panics when stderr is a closed pipe).
+
+use std::io::Write;
 
 use anyhow::Result;
 use tracing::{debug, error};
@@ -58,7 +62,9 @@ pub async fn run(config: Config) -> Result<i32> {
         if let Err(e) = pipeline.check_prerequisites().await {
             pipeline.close_stats_sender();
             if is_cancelled_error(&e) {
-                eprintln!("Deletion cancelled.");
+                // Ignore write errors (EPIPE): a closed stderr must not
+                // panic what is otherwise a clean, successful cancellation.
+                let _ = writeln!(std::io::stderr(), "Deletion cancelled.");
                 debug!("deletion cancelled by user.");
                 return Ok(EXIT_CODE_SUCCESS);
             }
