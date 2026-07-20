@@ -1263,3 +1263,45 @@ fn batch_run_state_flag_error_does_not_kill_batch() {
         "summary must still be printed: {stderr}"
     );
 }
+
+/// `--check-format` must surface an over-cap line as a per-line read error
+/// (structured `read_error` event) rather than silently stopping — the
+/// sync `check_format_lines` walker has its own read-error branch,
+/// separate from the executor paths.
+#[test]
+fn batch_run_check_format_oversized_line_reports_read_error() {
+    let long_line = format!("head-bucket s3://{}\n", "a".repeat(17 * 1024));
+    Command::cargo_bin("s7cmd")
+        .unwrap()
+        .args([
+            "batch-run",
+            "--check-format",
+            "--disable-color-tracing",
+            "-",
+        ])
+        .write_stdin(long_line)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("line read error"))
+        .stderr(predicate::str::contains("read_error"));
+}
+
+/// Scripts can come from a real file, not just `-`/stdin — the file branch
+/// of `run_read_all` (open + BufReader + read_all) must behave identically
+/// to the stdin branch, including the summary.
+#[test]
+fn batch_run_script_file_executes_lines() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("batch.txt");
+    std::fs::write(
+        &script,
+        "# comment\ncreate-bucket --dry-run s3://batch-file-a\ncreate-bucket --dry-run s3://batch-file-b\n",
+    )
+    .expect("write script");
+    Command::cargo_bin("s7cmd")
+        .unwrap()
+        .args(["batch-run", script.to_str().unwrap()])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("2 succeeded, 0 failed"));
+}
