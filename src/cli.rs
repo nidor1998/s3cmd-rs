@@ -406,8 +406,13 @@ pub enum Cmd {
 ///
 /// `hide(true)` alone only suppresses the flag from `--help`. clap_complete
 /// does not honor `hide(true)` for args, so we additionally clear the long
-/// name to keep it out of generated completion scripts. The arg id stays
-/// so `FromArgMatches` still derives `auto_complete_shell: None` cleanly;
+/// name to keep it out of generated completion scripts, and clear the env
+/// source: upstream declares the arg with `env`, so an exported
+/// `AUTO_COMPLETE_SHELL` would otherwise still populate it and fire its
+/// clap side effects (`default_value_if` defaulting sync source/target to
+/// `s3://ignored`, `required_unless_present` lifting required util targets)
+/// even though dispatch ignores the parsed value. With both cleared, the
+/// arg id stays and `FromArgMatches` derives `auto_complete_shell: None`;
 /// users who want completions use the top-level `--auto-complete-shell`.
 #[allow(dead_code)] // used from main.rs; cli_routing integration test includes this file directly
 pub fn cli_command() -> clap::Command {
@@ -439,7 +444,9 @@ fn build_cli_command() -> clap::Command {
                 .any(|a| a.get_id().as_str() == "auto_complete_shell");
             let sub = if has_flag {
                 sub.mut_arg("auto_complete_shell", |a| {
-                    a.hide(true).long(None::<&'static str>)
+                    a.hide(true)
+                        .long(None::<&'static str>)
+                        .env(None::<&'static str>)
                 })
             } else {
                 sub

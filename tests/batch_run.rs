@@ -1229,3 +1229,37 @@ fn batch_run_json_tracing_invalid_line_fields() {
         invalid["fields"]["reason"]
     );
 }
+
+/// A state-flag arg error inside a batch line must fail that line (exit 2)
+/// without killing the whole batch: upstream's validate_state_flag called
+/// process::exit(2), which bypassed per-line containment, skipped every
+/// later line, and suppressed the summary.
+#[test]
+fn batch_run_state_flag_error_does_not_kill_batch() {
+    let assert = Command::cargo_bin("s7cmd")
+        .unwrap()
+        .args(["batch-run", "--continue-on-error", "-"])
+        .write_stdin(
+            "put-bucket-versioning s3://example-bucket\n\
+             put-bucket-accelerate-configuration s3://example-bucket\n\
+             put-bucket-request-payment s3://example-bucket\n",
+        )
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        stderr
+            .matches("one of --enabled or --suspended must be specified")
+            .count()
+            == 2,
+        "lines 1 and 2 must both report the state-flag error: {stderr}"
+    );
+    assert!(
+        stderr.contains("one of --requester or --bucket-owner must be specified"),
+        "line 3 must still run after earlier lines failed: {stderr}"
+    );
+    assert!(
+        stderr.contains("0 succeeded, 3 failed"),
+        "summary must still be printed: {stderr}"
+    );
+}

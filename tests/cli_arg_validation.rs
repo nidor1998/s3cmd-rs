@@ -608,3 +608,85 @@ fn presign_no_args_exits_2() {
     assert_eq!(code, Some(2));
     assert!(!stderr.is_empty());
 }
+
+// ---- AUTO_COMPLETE_SHELL env var ----
+//
+// The per-subcommand --auto-complete-shell arg is stripped of both its long
+// name and its env source by build_cli_command (only the top-level flag
+// remains). Upstream declares the arg with `env`, so without the env-source
+// stripping an exported AUTO_COMPLETE_SHELL would silently re-arm the hidden
+// arg and fire its clap side effects: sync source/target defaulted to
+// s3://ignored, required util targets no longer required.
+
+#[test]
+fn auto_complete_shell_env_does_not_lift_required_target() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd()
+        .arg("get-bucket-versioning")
+        .env("AUTO_COMPLETE_SHELL", "bash"));
+    assert_eq!(
+        code,
+        Some(2),
+        "env var must not satisfy the required target; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("required"),
+        "expected missing-required parse error; got: {stderr}"
+    );
+}
+
+#[test]
+fn auto_complete_shell_env_does_not_default_sync_paths() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd().arg("sync").env("AUTO_COMPLETE_SHELL", "bash"));
+    assert_eq!(
+        code,
+        Some(2),
+        "sync must still require source/target with the env var set; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("source"),
+        "expected missing source error; got: {stderr}"
+    );
+}
+
+#[test]
+fn auto_complete_shell_env_invalid_value_is_ignored() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd()
+        .arg("get-bucket-versioning")
+        .env("AUTO_COMPLETE_SHELL", "not-a-shell"));
+    assert_eq!(code, Some(2));
+    assert!(
+        stderr.to_lowercase().contains("required") && !stderr.contains("invalid value"),
+        "env value must be ignored entirely, not parsed; got: {stderr}"
+    );
+}
+
+#[test]
+fn auto_complete_shell_env_does_not_default_clean_target() {
+    // s3rm-rs's target carries the same default_value_if — without the env
+    // stripping, `clean` with no target would proceed toward a real deletion
+    // pipeline against s3://ignored instead of failing validation.
+    let (code, _stdout, stderr) = run(s7cmd_cmd().arg("clean").env("AUTO_COMPLETE_SHELL", "bash"));
+    assert_eq!(
+        code,
+        Some(2),
+        "clean must still require a target with the env var set; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("required"),
+        "expected missing target error; got: {stderr}"
+    );
+}
+
+#[test]
+fn auto_complete_shell_env_does_not_lift_cp_paths() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd().arg("cp").env("AUTO_COMPLETE_SHELL", "bash"));
+    assert_eq!(
+        code,
+        Some(2),
+        "cp must still require source/target with the env var set; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("required"),
+        "expected missing source/target error; got: {stderr}"
+    );
+}

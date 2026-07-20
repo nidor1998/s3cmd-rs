@@ -273,6 +273,12 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
             status_to_exit(util_bin::cli::run_get_bucket_versioning(args, client_config).await)
         }
         Cmd::PutBucketVersioning(args) => {
+            // Validated here, not in the runner: upstream's validate_state_flag
+            // calls process::exit(2), which would kill a whole batch-run.
+            if let Err(e) = util_bin::cli::put_bucket_versioning::check_state_flag(&args) {
+                let _ = e.print();
+                return 2;
+            }
             let client_config = args.common.build_client_config();
             unit_to_exit(util_bin::cli::run_put_bucket_versioning(args, client_config).await)
         }
@@ -390,6 +396,13 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
             )
         }
         Cmd::PutBucketAccelerateConfiguration(args) => {
+            // See Cmd::PutBucketVersioning for why validation happens here.
+            if let Err(e) =
+                util_bin::cli::put_bucket_accelerate_configuration::check_state_flag(&args)
+            {
+                let _ = e.print();
+                return 2;
+            }
             let client_config = args.common.build_client_config();
             unit_to_exit(
                 util_bin::cli::run_put_bucket_accelerate_configuration(args, client_config).await,
@@ -401,6 +414,11 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
             status_to_exit(util_bin::cli::run_get_bucket_request_payment(args, client_config).await)
         }
         Cmd::PutBucketRequestPayment(args) => {
+            // See Cmd::PutBucketVersioning for why validation happens here.
+            if let Err(e) = util_bin::cli::put_bucket_request_payment::check_state_flag(&args) {
+                let _ = e.print();
+                return 2;
+            }
             let client_config = args.common.build_client_config();
             unit_to_exit(util_bin::cli::run_put_bucket_request_payment(args, client_config).await)
         }

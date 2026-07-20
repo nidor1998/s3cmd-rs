@@ -1,6 +1,9 @@
 // Vendored from s3rm-rs@1.3.4
 //   src/bin/s3rm/indicator.rs
-// Adjustments: stripped #[cfg(test)] mod tests
+// Adjustments: stripped #[cfg(test)] mod tests;
+//              final-summary trailing newline made EPIPE-safe (a bare
+//              eprintln! panics when stderr is a closed pipe, turning a
+//              successful run into exit 101; same fix as the sync_bin copy)
 
 // Progress indicator adapted from s3sync's `bin/s3sync/cli/indicator.rs`.
 //
@@ -137,7 +140,11 @@ pub fn show_indicator(
                             HumanDuration(elapsed),
                         ));
 
-                        eprintln!();
+                        // Ignore BrokenPipe/other write errors so a closed
+                        // stderr (e.g. `s7cmd clean ... 2>&1 | head`) does
+                        // not panic the indicator task — the panic would be
+                        // mapped to exit 101 for an otherwise successful run.
+                        let _ = writeln!(io::stderr());
                         let _ = io::stderr().flush();
                     }
 
