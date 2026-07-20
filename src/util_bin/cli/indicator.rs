@@ -361,6 +361,46 @@ mod tests {
         join_handle.await.unwrap();
     }
 
+    // Ported from s3util-rs PR#25 (post-1.7.1), adapted to the vendored
+    // 7-parameter show_indicator signature.
+    #[tokio::test]
+    async fn indicator_counts_mismatches_as_warnings() {
+        // ETagMismatch / ChecksumMismatch must bump both their own counter and
+        // the warning counter, and show_result must render the "mismatch"
+        // verification status for both dimensions — here with the
+        // log_sync_summary arm enabled as well.
+        let (stats_sender, stats_receiver) = async_channel::unbounded();
+        let join_handle = show_indicator(
+            stats_receiver,
+            false,
+            true,
+            true,
+            String::new(),
+            "src".to_string(),
+            "dst".to_string(),
+        );
+
+        stats_sender
+            .send(SyncStatistics::SyncBytes(1))
+            .await
+            .unwrap();
+        stats_sender
+            .send(SyncStatistics::ETagMismatch {
+                key: "test".to_string(),
+            })
+            .await
+            .unwrap();
+        stats_sender
+            .send(SyncStatistics::ChecksumMismatch {
+                key: "test".to_string(),
+            })
+            .await
+            .unwrap();
+        stats_sender.close();
+
+        join_handle.await.unwrap();
+    }
+
     #[test]
     fn verification_status_etag_skipped_and_checksum_failed() {
         let (etag, checksum) = verification_status(0, 0, 0, 1);

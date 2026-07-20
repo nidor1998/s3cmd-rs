@@ -130,6 +130,39 @@ fn malformed_json_exits_1() {
     );
 }
 
+/// A top-level `TransitionDefaultMinimumObjectSize` — as emitted by
+/// `get-bucket-lifecycle-configuration` — must be rejected with guidance, not
+/// silently dropped (dropping it resets the bucket to S3's default on a
+/// get-edit-put roundtrip). Adapted from s3util-rs PR#25; the parse rejection
+/// fires before any AWS call, so this runs without credentials or network.
+#[test]
+fn transition_default_minimum_object_size_in_json_exits_1_with_guidance() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        tmp.path(),
+        br#"{"Rules": [{"ID": "r1", "Status": "Enabled",
+            "Expiration": {"Days": 30}, "Filter": {"Prefix": ""}}],
+            "TransitionDefaultMinimumObjectSize": "all_storage_classes_128K"}"#,
+    )
+    .unwrap();
+    let (ok, _stdout, stderr, code) = run(s7cmd().args([
+        "put-bucket-lifecycle-configuration",
+        "s3://example-bucket",
+        tmp.path().to_str().unwrap(),
+    ]));
+    assert!(!ok);
+    assert_eq!(
+        code,
+        Some(1),
+        "TransitionDefaultMinimumObjectSize in the document must exit 1; got {code:?}; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("TransitionDefaultMinimumObjectSize")
+            && stderr.contains("request parameter"),
+        "expected guidance naming the field and calling it a request parameter; got: {stderr}"
+    );
+}
+
 #[test]
 fn target_no_sign_request_conflicts_with_target_profile() {
     let tmp = tempfile::NamedTempFile::new().unwrap();

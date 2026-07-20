@@ -3,6 +3,12 @@
 // Adjustments: stripped #[cfg(test)] mod tests; commented out per-subcommand
 //              pub mod declarations (re-enabled per task as files land);
 //              kept ExitStatus, EXIT_CODE_*, run_copy_phase, build_rate_limiter.
+// Includes fixes ported from s3util-rs PR#25 (post-1.7.1):
+//   - is_user_cancellation: a worker failure that cancels the pipeline token
+//     is reported as a failure (exit 1), not a SIGINT cancellation (exit 130);
+//   - extract_keys: a local target with a trailing '/' resolves to
+//     <dir>/<basename> on every platform (adapted to 1.7.1's
+//     fs_util::is_key_a_directory — has_trailing_separator lands later).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -16,6 +22,7 @@ use s3util_rs::Config;
 use s3util_rs::storage::Storage;
 use s3util_rs::storage::StorageFactory;
 use s3util_rs::storage::local::LocalStorageFactory;
+use s3util_rs::storage::local::fs_util;
 use s3util_rs::storage::s3::S3StorageFactory;
 use s3util_rs::transfer::{TransferDirection, TransferOutcome, detect_direction};
 use s3util_rs::types::StoragePath;
@@ -555,11 +562,7 @@ pub async fn run_copy_phase(config: Config) -> Result<CopyPhase> {
     // Wait for indicator to finish
     let _ = indicator_handle.await;
 
-    // ctrl_c_handler is the only code path that cancels this token, so an
-    // observed cancellation means SIGINT was received. Snapshot the token
-    // here so callers (run_cp's wrapper, run_mv) see the same bool the
-    // pipeline did.
-    let cancelled = cancellation_token.is_cancelled();
+    let cancelled = is_user_cancellation(cancellation_token.is_cancelled(), &transfer_result);
     let has_warning = has_warning.load(std::sync::atomic::Ordering::SeqCst);
 
     Ok(CopyPhase {
@@ -570,6 +573,29 @@ pub async fn run_copy_phase(config: Config) -> Result<CopyPhase> {
         cancelled,
         has_warning,
     })
+}
+
+/// Decide whether a finished copy phase should be reported to the user as a
+/// cancellation (exit 130) rather than a failure (exit 1).
+///
+/// A cancelled token on its own does not mean SIGINT. The parallel s3-to-stdio
+/// workers also cancel the pipeline token to stop their peers when a chunk GET
+/// or a stdout write fails, so reading the token alone reported exit 130 for a
+/// failed download and suppressed the error message entirely — while the same
+/// failure on the serial path exited 1 with the cause logged.
+///
+/// The transfer result is the authoritative signal: a genuine SIGINT surfaces
+/// as `S3syncError::Cancelled` (possibly wrapped in `.context()`), and anything
+/// else is a real failure that must be reported as one.
+fn is_user_cancellation(
+    token_cancelled: bool,
+    transfer_result: &Result<s3util_rs::transfer::TransferOutcome>,
+) -> bool {
+    token_cancelled
+        && transfer_result
+            .as_ref()
+            .err()
+            .is_none_or(s3util_rs::types::error::is_cancelled_error)
 }
 
 fn get_path_strings(source: &StoragePath, target: &StoragePath) -> (String, String) {
@@ -637,7 +663,13 @@ pub(super) fn extract_keys(config: &Config) -> Result<(String, String)> {
             let p = path.clone();
             // If target is a directory (existing dir or ends with separator),
             // append the source object's basename — like `aws s3 cp s3://bucket/key .`
-            if p.is_dir() || p.to_string_lossy().ends_with(std::path::MAIN_SEPARATOR) {
+            // The separator test must accept '/' on Windows too, so that `out/`
+            // resolves to `out/<basename>` rather than staying the literal key
+            // `out/`, which the storage layer would treat as a directory and
+            // silently write nothing for. (Upstream calls
+            // fs_util::has_trailing_separator, introduced after 1.7.1;
+            // is_key_a_directory is the same trailing-separator test.)
+            if p.is_dir() || fs_util::is_key_a_directory(&p.to_string_lossy()) {
                 p.join(&source_basename).to_string_lossy().to_string()
             } else {
                 p.to_string_lossy().to_string()
@@ -972,5 +1004,76 @@ mod tests {
         ]);
         let (_, tgt) = extract_keys(&config).unwrap();
         assert!(tgt.ends_with("object.bin"), "target was: {tgt}");
+    }
+
+    /// Same as above but with a forward slash instead of the platform separator.
+    /// Windows accepts `/` as a separator, and the storage layer treats a
+    /// trailing `/` as a directory on every platform — so key resolution must
+    /// append the basename here too. Leaving the key as the literal `out/` made
+    /// the storage layer skip the write entirely and report success.
+    #[test]
+    fn extract_keys_s3_to_local_forward_slash_target_appends_basename() {
+        let tmp = TempDir::new();
+        let target_arg = format!("{}/", tmp.path().to_string_lossy());
+        let config = build_config(vec![
+            "s3util",
+            "cp",
+            "s3://b/remote/object.bin",
+            target_arg.as_str(),
+        ]);
+        let (_, tgt) = extract_keys(&config).unwrap();
+        assert!(
+            tgt.ends_with("object.bin"),
+            "forward-slash directory target must resolve to <dir>/<basename>, got: {tgt}"
+        );
+        assert!(
+            !fs_util::is_key_a_directory(&tgt),
+            "resolved key must not still look like a directory to the storage layer: {tgt}"
+        );
+    }
+
+    /// Only a genuine SIGINT may be reported as a cancellation. The parallel
+    /// s3-to-stdio workers cancel the same token to stop their peers after a
+    /// chunk GET or stdout write fails; reporting that as exit 130 hid the
+    /// error message and disagreed with the serial path, which exits 1.
+    #[test]
+    fn worker_failure_that_cancels_the_token_is_not_user_cancellation() {
+        use anyhow::Context;
+        use s3util_rs::transfer::TransferOutcome;
+        use s3util_rs::types::error::S3syncError;
+
+        // A real failure that also cancelled the token => a failure, not 130.
+        let failed: Result<TransferOutcome> = Err(anyhow!("failed to download chunk: broken pipe"));
+        assert!(
+            !is_user_cancellation(true, &failed),
+            "a transfer error must be reported as a failure even though the \
+             worker cancelled the token to stop its peers"
+        );
+
+        // The same error wrapped in context must still be treated as a failure.
+        let wrapped: Result<TransferOutcome> = Err(anyhow!("connection reset"))
+            .context("failed to download chunk: s3://b/k bytes=0-8388607");
+        assert!(!is_user_cancellation(true, &wrapped));
+
+        // A genuine SIGINT surfaces as S3syncError::Cancelled => exit 130.
+        let cancelled: Result<TransferOutcome> = Err(anyhow!(S3syncError::Cancelled));
+        assert!(is_user_cancellation(true, &cancelled));
+
+        // ...including when it is wrapped in context on the way up.
+        let cancelled_wrapped: Result<TransferOutcome> =
+            Err(anyhow!(S3syncError::Cancelled)).context("failed to download source object: k");
+        assert!(is_user_cancellation(true, &cancelled_wrapped));
+
+        // Cancelled token with a successful transfer (SIGINT observed after the
+        // body completed) is still a cancellation.
+        assert!(is_user_cancellation(true, &Ok(TransferOutcome::default())));
+
+        // An un-cancelled token is never a cancellation, whatever the result.
+        assert!(!is_user_cancellation(
+            false,
+            &Ok(TransferOutcome::default())
+        ));
+        let e: Result<TransferOutcome> = Err(anyhow!("some failure"));
+        assert!(!is_user_cancellation(false, &e));
     }
 }

@@ -437,16 +437,50 @@ fn build_cli_command() -> clap::Command {
             let has_flag = sub
                 .get_arguments()
                 .any(|a| a.get_id().as_str() == "auto_complete_shell");
-            if has_flag {
+            let sub = if has_flag {
                 sub.mut_arg("auto_complete_shell", |a| {
                     a.hide(true).long(None::<&'static str>)
                 })
             } else {
                 sub
-            }
+            };
+            hide_credential_env_values(sub)
         });
     }
     cmd
+}
+
+/// Mark every env-backed credential argument `hide_env_values` so a secret
+/// exported through the environment is not echoed into `--help` output
+/// (CI logs, terminal scrollback, pasted bug reports). clap renders the
+/// current value of an arg's env var into help text by default; the env var
+/// *name* stays visible, only the value is suppressed.
+///
+/// Upstream fixes this at the derive level — s3sync PR#246, s3rm-rs PR#94,
+/// s3ls-rs PR#29, and s3util-rs PR#25 all add `hide_env_values = true` to
+/// their credential args — but those changes are not yet in the released
+/// crates s7cmd pins, so the same hardening is applied here to the built
+/// `Command` tree. Once the upstream releases catch up this becomes an
+/// idempotent no-op.
+///
+/// The id predicate matches the exact set upstream hides: access keys,
+/// secret access keys, session tokens (`*access_key*`, `*session_token*`)
+/// and SSE-C key material (`*sse_c_key*`, which also covers the
+/// `*_sse_c_key_md5` digests).
+fn hide_credential_env_values(mut sub: clap::Command) -> clap::Command {
+    let sensitive_ids: Vec<clap::Id> = sub
+        .get_arguments()
+        .filter(|a| {
+            let id = a.get_id().as_str();
+            (id.contains("access_key") || id.contains("session_token") || id.contains("sse_c_key"))
+                && a.get_env().is_some()
+        })
+        .map(|a| a.get_id().clone())
+        .collect();
+    for id in sensitive_ids {
+        sub = sub.mut_arg(id, |a| a.hide_env_values(true));
+    }
+    sub
 }
 
 #[cfg(test)]
@@ -555,5 +589,74 @@ mod tests {
             .find(|a| a.get_id().as_str() == "auto_complete_shell")
             .expect("top-level --auto-complete-shell is missing");
         assert_eq!(arg.get_long(), Some("auto-complete-shell"));
+    }
+
+    /// Every env-backed credential argument across every subcommand must be
+    /// `hide_env_values` so `--help` never echoes a secret exported through
+    /// the environment. Mirrors the upstream guard test added by s3util-rs
+    /// PR#25; here the invariant is enforced by `hide_credential_env_values`
+    /// because the released upstream crates do not yet carry their own
+    /// `hide_env_values = true` fixes (s3sync PR#246, s3rm-rs PR#94,
+    /// s3ls-rs PR#29, s3util-rs PR#25).
+    #[test]
+    fn credential_args_hide_env_values_in_every_subcommand() {
+        fn check(cmd: &clap::Command, path: &str, checked: &mut usize) {
+            for arg in cmd.get_arguments() {
+                let id = arg.get_id().as_str();
+                let sensitive = id.contains("access_key")
+                    || id.contains("session_token")
+                    || id.contains("sse_c_key");
+                if sensitive && arg.get_env().is_some() {
+                    *checked += 1;
+                    assert!(
+                        arg.is_hide_env_values_set() || arg.is_hide_env_set(),
+                        "{path} --{id}: env-backed credential arg must hide its env value in help output"
+                    );
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                check(sub, &format!("{path} {}", sub.get_name()), checked);
+            }
+        }
+
+        let cmd = cli_command();
+        let mut checked = 0;
+        check(&cmd, cmd.get_name(), &mut checked);
+        // sync and cp/mv alone contribute 10 credential args each, and the
+        // ~40 CommonClientArgs-based subcommands 3 each; a low count means
+        // the walk (or the mutation loop) went wrong.
+        assert!(checked >= 100, "only {checked} credential args found");
+    }
+
+    /// The mutation must reach the args embedded from every upstream crate,
+    /// not only s3util-rs. Spot-check one representative credential arg per
+    /// upstream parser: sync (s3sync), clean (s3rm-rs), ls (s3ls-rs), and
+    /// cp (s3util-rs) — including the SSE-C key material on sync/cp.
+    #[test]
+    fn credential_args_hidden_for_each_upstream_parser() {
+        let cmd = cli_command();
+        for (sub_name, arg_id) in [
+            ("sync", "source_access_key"),
+            ("sync", "target_sse_c_key"),
+            ("sync", "target_sse_c_key_md5"),
+            ("clean", "target_secret_access_key"),
+            ("ls", "target_session_token"),
+            ("cp", "source_sse_c_key"),
+            ("mv", "target_access_key"),
+            ("rename", "source_session_token"),
+            ("head-object", "source_sse_c_key_md5"),
+        ] {
+            let sub = cmd
+                .find_subcommand(sub_name)
+                .unwrap_or_else(|| panic!("subcommand `{sub_name}` missing"));
+            let arg = sub
+                .get_arguments()
+                .find(|a| a.get_id().as_str() == arg_id)
+                .unwrap_or_else(|| panic!("`{sub_name}` lost its `{arg_id}` arg"));
+            assert!(
+                arg.is_hide_env_values_set(),
+                "`{sub_name} --{arg_id}` must hide its env value in help output",
+            );
+        }
     }
 }

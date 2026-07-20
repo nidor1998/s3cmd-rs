@@ -93,6 +93,40 @@ fn mv_missing_target_exits_2() {
     assert!(!stderr.is_empty());
 }
 
+// ---- mv self-move guard (ported from s3util-rs PR#25) ----
+//
+// mv is copy-then-delete, so moving an object onto itself would delete the
+// object the copy just wrote. The guard fires inside run_mv before any client
+// is built, so these run without AWS credentials or network — but as a
+// runtime rejection, not a clap error, the exit code is 1 (not 2).
+
+#[test]
+fn mv_self_move_identical_keys_exits_1() {
+    let (code, _stdout, stderr) =
+        run(s7cmd_cmd().args(["mv", "s3://b/dir/k.txt", "s3://b/dir/k.txt"]));
+    assert_eq!(code, Some(1), "mv onto itself must exit 1; stderr={stderr}");
+    assert!(
+        stderr.contains("onto itself"),
+        "expected the self-move rejection on stderr; got: {stderr}"
+    );
+}
+
+#[test]
+fn mv_self_move_directory_style_target_exits_1() {
+    // `mv s3://b/dir/k.txt s3://b/dir/` resolves the target to the source key
+    // by appending the basename — the same data-loss case spelled differently.
+    let (code, _stdout, stderr) = run(s7cmd_cmd().args(["mv", "s3://b/dir/k.txt", "s3://b/dir/"]));
+    assert_eq!(
+        code,
+        Some(1),
+        "directory-style self-move must exit 1; stderr={stderr}"
+    );
+    assert!(
+        stderr.contains("onto itself"),
+        "expected the self-move rejection on stderr; got: {stderr}"
+    );
+}
+
 // ---- cp --skip-existing validation (s3util-rs 1.2.0) ----
 
 #[test]
