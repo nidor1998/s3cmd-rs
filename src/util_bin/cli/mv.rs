@@ -1,7 +1,7 @@
 // Vendored from s3util-rs@1.1.0
 //   src/bin/s3util/cli/mv.rs
 // Adjustments: stripped #[cfg(test)] mod tests; rewrote crate::cli → super
-// Includes the self-move guard ported from s3util-rs PR#25 (post-1.7.1):
+// Includes the self-move guard from s3util-rs 1.8.0 (originally PR#25):
 //   check_not_self_move rejects `mv` onto the same S3 object before the copy
 //   runs (copy-then-delete would destroy the object on an unversioned bucket).
 

@@ -38,6 +38,7 @@ pub async fn run_head_object(
         sse_c_key: args.source_sse_c_key.clone(),
         sse_c_key_md5: args.source_sse_c_key_md5.clone(),
         enable_additional_checksum: args.enable_additional_checksum,
+        request_payer: client_config.request_payer.clone(),
     };
 
     match api::head_object(&client, &bucket, &key, opts).await {

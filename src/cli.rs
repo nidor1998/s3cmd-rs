@@ -489,12 +489,12 @@ fn build_cli_command() -> clap::Command {
 /// current value of an arg's env var into help text by default; the env var
 /// *name* stays visible, only the value is suppressed.
 ///
-/// Upstream fixes this at the derive level — s3sync PR#246, s3rm-rs PR#94,
-/// s3ls-rs PR#29, and s3util-rs PR#25 all add `hide_env_values = true` to
-/// their credential args — but those changes are not yet in the released
-/// crates s7cmd pins, so the same hardening is applied here to the built
-/// `Command` tree. Once the upstream releases catch up this becomes an
-/// idempotent no-op.
+/// Upstream fixes this at the derive level: s3sync 1.60.0, s3rm-rs 1.4.0,
+/// s3ls-rs 1.1.0, and s3util-rs 1.8.0 (the releases s7cmd pins) all mark
+/// their credential args `hide_env_values = true`, so this pass is an
+/// idempotent no-op today. It is kept as a guard: a future upstream release
+/// that adds a credential arg without the marking (or drops it) is re-hidden
+/// here rather than leaking secrets into `--help` output.
 ///
 /// The id predicate matches the exact set upstream hides: access keys,
 /// secret access keys, session tokens (`*access_key*`, `*session_token*`)
@@ -627,10 +627,11 @@ mod tests {
     /// Every env-backed credential argument across every subcommand must be
     /// `hide_env_values` so `--help` never echoes a secret exported through
     /// the environment. Mirrors the upstream guard test added by s3util-rs
-    /// PR#25; here the invariant is enforced by `hide_credential_env_values`
-    /// because the released upstream crates do not yet carry their own
-    /// `hide_env_values = true` fixes (s3sync PR#246, s3rm-rs PR#94,
-    /// s3ls-rs PR#29, s3util-rs PR#25).
+    /// PR#25. The pinned upstream releases (s3sync 1.60.0, s3rm-rs 1.4.0,
+    /// s3ls-rs 1.1.0, s3util-rs 1.8.0) now carry their own
+    /// `hide_env_values = true` markings; `hide_credential_env_values` backs
+    /// them up so a future upstream credential arg that misses the marking
+    /// still cannot leak.
     #[test]
     fn credential_args_hide_env_values_in_every_subcommand() {
         fn check(cmd: &clap::Command, path: &str, checked: &mut usize) {

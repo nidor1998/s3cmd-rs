@@ -147,7 +147,7 @@ async fn auto_complete_shell_emits_script_and_exits_zero() {
     assert!(
         stdout.contains("s7cmd"),
         "expected bash completion output mentioning 's7cmd', got first 200 chars: {}",
-        &stdout.chars().take(200).collect::<String>()
+        stdout.chars().take(200).collect::<String>()
     );
 }
 
@@ -174,7 +174,7 @@ async fn auto_complete_shell_zsh() {
     assert!(
         stdout.contains("#compdef s7cmd"),
         "expected zsh completion output containing '#compdef s7cmd', got first 200 chars: {}",
-        &stdout.chars().take(200).collect::<String>()
+        stdout.chars().take(200).collect::<String>()
     );
 }
 
@@ -201,7 +201,7 @@ async fn auto_complete_shell_fish() {
     assert!(
         stdout.contains("complete -c s7cmd"),
         "expected fish completion output containing 'complete -c s7cmd', got first 200 chars: {}",
-        &stdout.chars().take(200).collect::<String>()
+        stdout.chars().take(200).collect::<String>()
     );
 }
 

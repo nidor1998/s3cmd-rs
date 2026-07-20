@@ -46,6 +46,7 @@ pub async fn run_put_object_tagging(
         &key,
         args.source_version_id.as_deref(),
         tagging,
+        client_config.request_payer.clone(),
     )
     .await?;
     info!(

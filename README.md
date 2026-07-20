@@ -220,7 +220,7 @@ freely combined:
 | (default) | Read the whole script first, validate every line, then execute. Catches bad lines before any line runs. Shows a progress bar when stderr is a TTY. |
 | `--streaming` | Execute commands as they are read. No progress bar. Use for unbounded or pipelined input where buffering the whole script is undesirable. |
 | `--parallel 1` (default) | Sequential execution. Lines run in script order. |
-| `--parallel N` | Run up to *N* commands concurrently. Completion order is not guaranteed. |
+| `--parallel N` | Run up to *N* commands concurrently (max 1024; a larger value is rejected at parse time). Completion order is not guaranteed. |
 | `--parallel 0` | Use all logical CPUs. Completion order is not guaranteed. |
 
 Script order is preserved only with `--parallel 1`. With
@@ -274,7 +274,11 @@ and a matching outcome event (`success`, `warning (exit N)`,
 line number and the original input text. `start` and `success`
 are info level (silent at the default warn level — pass `-v` to
 see them); `warning` and `skipped` are warn level and `failure`
-is error level, all three visible without `-v`.
+is error level, all three visible without `-v`. If a line carries
+an inline credential option (`--*-access-key`,
+`--*-secret-access-key`, `--*-session-token`, `--*-sse-c-key`,
+`--*-sse-c-key-md5`), its value is masked to `****` in the logged
+text.
 
 **Tracing flags belong to `batch-run`, not per-line.** Pass
 `--json-tracing`, `--aws-sdk-tracing`, `--span-events-tracing`,

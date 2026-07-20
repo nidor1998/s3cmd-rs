@@ -62,6 +62,7 @@ async fn target_exists(config: &Config) -> anyhow::Result<bool> {
                 sse_c_key: config.target_sse_c_key.key.clone(),
                 sse_c_key_md5: config.target_sse_c_key_md5.clone(),
                 enable_additional_checksum: false,
+                request_payer: target_client_config.request_payer.clone(),
             };
             match api::head_object(&client, bucket, &target_key, opts).await {
                 Ok(_) => Ok(true),

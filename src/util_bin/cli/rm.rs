@@ -30,7 +30,14 @@ pub async fn run_rm(args: RmArgs, client_config: ClientConfig) -> Result<()> {
         return Ok(());
     }
 
-    api::delete_object(&client, &bucket, &key, args.source_version_id.as_deref()).await?;
+    api::delete_object(
+        &client,
+        &bucket,
+        &key,
+        args.source_version_id.as_deref(),
+        client_config.request_payer.clone(),
+    )
+    .await?;
     info!(
         bucket = %bucket,
         key = %key,
