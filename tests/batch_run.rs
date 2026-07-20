@@ -1305,3 +1305,106 @@ fn batch_run_script_file_executes_lines() {
         .success()
         .stderr(predicate::str::contains("2 succeeded, 0 failed"));
 }
+
+// ---- inline-credential redaction in per-line logs ----
+//
+// A batch-run line may legally carry a credential inline (e.g.
+// `--target-secret-access-key <value>`). batch-run echoes each line's raw
+// text into per-line log events; without masking, that secret is written to
+// stderr (and to `--json-tracing` JSON) on any non-success outcome — visible
+// at the default verbosity. `redact::redact_secrets` masks the value of every
+// known secret flag before logging. `RUST_LOG` is cleared so the default
+// s7cmd tracing filter applies deterministically.
+
+/// Invalid (parse-error) line → logged at error level, visible at the default
+/// verbosity. The inline secret must be masked to `****`, not echoed.
+#[test]
+fn batch_run_masks_inline_secret_in_invalid_line_log() {
+    let secret = "wJalrXUtnFEMIsupersecretVALUE0001";
+    let assert = Command::cargo_bin("s7cmd")
+        .unwrap()
+        .env_remove("RUST_LOG")
+        .args(["batch-run", "--continue-on-error", "-"])
+        .write_stdin(format!(
+            "head-bucket --target-access-key AKIAEXAMPLEID --target-secret-access-key {secret} --bogus-unknown-flag s3://b\n"
+        ))
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        !stderr.contains(secret),
+        "secret leaked into invalid-line log: {stderr}"
+    );
+    assert!(
+        stderr.contains("****"),
+        "expected redaction placeholder: {stderr}"
+    );
+    // The line stays identifiable — the subcommand token survives redaction.
+    assert!(
+        stderr.contains("head-bucket"),
+        "command context lost: {stderr}"
+    );
+}
+
+/// `--check-format` path → the invalid line is logged at error level; the
+/// inline secret must be masked there too.
+#[test]
+fn batch_run_check_format_masks_inline_secret() {
+    let secret = "wJalrXUtnFEMIsupersecretVALUE0002";
+    let assert = Command::cargo_bin("s7cmd")
+        .unwrap()
+        .env_remove("RUST_LOG")
+        .args(["batch-run", "--check-format", "-"])
+        .write_stdin(format!(
+            "head-bucket --target-access-key AKIAEXAMPLEID --target-secret-access-key {secret} --bogus-unknown-flag s3://b\n"
+        ))
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(
+        !stderr.contains(secret),
+        "secret leaked into check-format log: {stderr}"
+    );
+    assert!(
+        stderr.contains("****"),
+        "expected redaction placeholder: {stderr}"
+    );
+}
+
+/// A successfully dispatched line logged at info level (`-v`) must also mask
+/// an inline credential. `presign` signs locally (no network), so this runs
+/// offline and exercises the `log_start` / `log_end` success path.
+#[test]
+fn batch_run_masks_inline_secret_in_success_log() {
+    let secret = "wJalrXUtnFEMIsupersecretVALUE0003";
+    let assert = Command::cargo_bin("s7cmd")
+        .unwrap()
+        .env_remove("RUST_LOG")
+        .args(["batch-run", "-v", "-"])
+        .write_stdin(format!(
+            "presign s3://bucket/key --target-access-key AKIAEXAMPLEID --target-secret-access-key {secret} --target-region us-east-1\n"
+        ))
+        .assert()
+        .success();
+    let out = assert.get_output();
+    let stderr = String::from_utf8(out.stderr.clone()).unwrap();
+    let stdout = String::from_utf8(out.stdout.clone()).unwrap();
+    assert!(
+        !stderr.contains(secret),
+        "secret leaked into info-level log: {stderr}"
+    );
+    assert!(
+        stderr.contains("****"),
+        "expected redaction placeholder: {stderr}"
+    );
+    // The presigned URL is still produced on stdout, and it never carries the
+    // secret access key (only the access key id + signature).
+    assert!(
+        stdout.contains("X-Amz-Signature"),
+        "presigned URL expected on stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains(secret),
+        "secret must never appear in the presigned URL: {stdout}"
+    );
+}

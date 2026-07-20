@@ -145,6 +145,30 @@ pub struct Cli {
     pub command: Option<Cmd>,
 }
 
+/// Upper bound on `batch-run --parallel`. An unbounded worker count has two
+/// failure modes: `tokio::sync::Semaphore::new` panics — aborting the whole
+/// process with exit 101 — once the value exceeds `usize::MAX >> 3`, and even
+/// a large-but-valid value would spawn that many concurrent dispatch tasks,
+/// exhausting file descriptors / connections. 1024 concurrent whole-subcommand
+/// executions is already far beyond any practical batch workload (each line
+/// may itself be a multi-worker transfer), so the cap stays generous while
+/// keeping the knob safe. `0` (use all logical CPUs) is always accepted.
+pub(crate) const MAX_PARALLEL: usize = 1024;
+
+/// Value parser for `--parallel`. Accepts `0..=MAX_PARALLEL`, rejecting an
+/// oversized or non-numeric value at clap parse time (clean exit 2) rather
+/// than letting it reach `Semaphore::new` and panic (exit 101). Mirrors the
+/// custom-parser style used for `presign --expires-in` upstream.
+fn parse_parallel(s: &str) -> Result<usize, String> {
+    let n: usize = s
+        .parse()
+        .map_err(|_| format!("invalid value '{s}': expected an integer in 0..={MAX_PARALLEL}"))?;
+    if n > MAX_PARALLEL {
+        return Err(format!("--parallel must be no more than {MAX_PARALLEL}"));
+    }
+    Ok(n)
+}
+
 #[derive(clap::Args, Clone, Debug)]
 pub struct BatchRunArgs {
     /// Path to a script file with s7cmd commands, or `-` to read from stdin.
@@ -152,8 +176,10 @@ pub struct BatchRunArgs {
     pub script: String,
 
     /// Number of commands to run concurrently. 1 = sequential (default).
-    /// 0 = use all logical CPUs.
-    #[arg(long, default_value_t = 1, value_name = "N")]
+    /// 0 = use all logical CPUs. Must be no more than `MAX_PARALLEL` (1024);
+    /// an oversized value is rejected at parse time rather than panicking the
+    /// tokio semaphore.
+    #[arg(long, default_value_t = 1, value_name = "N", value_parser = parse_parallel)]
     pub parallel: usize,
 
     /// Execute commands as they are read from stdin (no progress bar).
@@ -665,5 +691,45 @@ mod tests {
                 "`{sub_name} --{arg_id}` must hide its env value in help output",
             );
         }
+    }
+
+    // ---- --parallel value parser (MAX_PARALLEL cap) ----
+    //
+    // An unbounded `--parallel` reaches `tokio::sync::Semaphore::new`, which
+    // panics (aborting the process, exit 101) once the value exceeds
+    // `usize::MAX >> 3`. `parse_parallel` rejects out-of-range input at clap
+    // parse time (exit 2) instead.
+
+    #[test]
+    fn parse_parallel_accepts_zero_one_and_max() {
+        // 0 = "all logical CPUs", 1 = sequential, MAX_PARALLEL = the ceiling.
+        assert_eq!(parse_parallel("0"), Ok(0));
+        assert_eq!(parse_parallel("1"), Ok(1));
+        assert_eq!(parse_parallel(&MAX_PARALLEL.to_string()), Ok(MAX_PARALLEL));
+    }
+
+    #[test]
+    fn parse_parallel_rejects_just_over_max() {
+        let err = parse_parallel(&(MAX_PARALLEL + 1).to_string()).unwrap_err();
+        assert!(err.contains("no more than"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_parallel_rejects_semaphore_panic_range() {
+        // tokio's Semaphore::new panics above `usize::MAX >> 3`; the value one
+        // past that boundary — and `usize::MAX` itself — must be rejected here
+        // rather than ever reaching `Semaphore::new`.
+        let boundary = (usize::MAX >> 3).wrapping_add(1);
+        assert!(parse_parallel(&boundary.to_string()).is_err());
+        assert!(parse_parallel(&usize::MAX.to_string()).is_err());
+    }
+
+    #[test]
+    fn parse_parallel_rejects_overflow_and_non_numeric() {
+        // Beyond usize::MAX → clean parse error (no overflow/panic).
+        assert!(parse_parallel("99999999999999999999999999").is_err());
+        assert!(parse_parallel("abc").is_err());
+        assert!(parse_parallel("").is_err());
+        assert!(parse_parallel("-1").is_err());
     }
 }

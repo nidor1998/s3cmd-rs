@@ -12,7 +12,9 @@ Ports the applicable fixes from s3sync [PR#246](https://github.com/nidor1998/s3s
 [PR#94](https://github.com/nidor1998/s3rm-rs/pull/94), s3ls-rs
 [PR#29](https://github.com/nidor1998/s3ls-rs/pull/29), and s3util-rs
 [PR#25](https://github.com/nidor1998/s3util-rs/pull/25) into s7cmd's own code
-(the CLI builder and the vendored bin runners).
+(the CLI builder and the vendored bin runners). It also includes two independent hardening fixes to s7cmd's own
+`batch-run` / CLI code found in a security review — inline-credential redaction in per-line logs, and a `--parallel`
+upper bound (see **Security** and **Fixed › batch-run** below).
 
 ### Security
 
@@ -22,6 +24,13 @@ Ports the applicable fixes from s3sync [PR#246](https://github.com/nidor1998/s3s
   environment-variable names are still shown. Upstream fixes this in the (unreleased) mains of all four libraries;
   until those ship in released crates, s7cmd enforces the same `hide_env_values` marking when it builds its clap
   command tree, which becomes an idempotent no-op once the upstream releases catch up.
+- `batch-run` no longer echoes inline credential values from a script line into its logs. A per-line command may
+  legally carry a credential on the command line (`--target-secret-access-key`, `--source-secret-access-key`,
+  `--*-access-key`, `--*-session-token`, `--*-sse-c-key`, `--*-sse-c-key-md5`); batch-run logs each line's raw text as
+  the `raw` field on per-line events, and the `warning` / `failure` / `invalid` / `panicked` events are emitted at the
+  default verbosity (and, with `--json-tracing`, into machine-readable JSON). The value of every such credential flag —
+  the same set hidden from `--help` above — is now masked to `****` before the line is logged; a line carrying no
+  credential is logged unchanged.
 
 ### Fixed
 
@@ -48,6 +57,14 @@ Ports the applicable fixes from s3sync [PR#246](https://github.com/nidor1998/s3s
   bucket configured with `varies_by_storage_class` back to S3's default of `all_storage_classes_128K` on a
   get-edit-put roundtrip. (Upstream additionally gains a `--transition-default-minimum-object-size` option; that flag
   arrives in s7cmd with the next s3util-rs release.)
+
+#### batch-run
+
+- `batch-run --parallel` now rejects a value greater than 1024 at parse time (a clean exit 2) instead of accepting an
+  arbitrarily large worker count. A value above `usize::MAX >> 3` reached `tokio::sync::Semaphore::new` and panicked,
+  aborting the whole run with exit 101 before any line executed; the bound also stops an oversized-but-valid value from
+  spawning a runaway number of concurrent commands (file-descriptor / connection exhaustion). `--parallel 0` (use all
+  logical CPUs) is still accepted.
 
 ### Documentation
 

@@ -690,3 +690,61 @@ fn auto_complete_shell_env_does_not_lift_cp_paths() {
         "expected missing source/target error; got: {stderr}"
     );
 }
+
+// ---- batch-run --parallel upper bound ----
+//
+// `--parallel` is capped at MAX_PARALLEL (1024). An oversized or overflowing
+// value must be rejected at clap parse time (exit 2), never reaching
+// `tokio::sync::Semaphore::new`, which panics (aborting with exit 101) once
+// the worker count exceeds `usize::MAX >> 3`. `s7cmd_cmd` closes stdin and the
+// parse error fires before any script read, so the `-` positional never blocks.
+
+#[test]
+fn batch_run_parallel_over_cap_exits_2() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd().args(["batch-run", "--parallel", "100000", "-"]));
+    assert_eq!(
+        code,
+        Some(2),
+        "oversized --parallel must be a clean parse error; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("no more than")
+            || stderr.to_lowercase().contains("parallel"),
+        "expected a --parallel range error; got: {stderr}"
+    );
+}
+
+#[test]
+fn batch_run_parallel_semaphore_panic_value_exits_2_not_101() {
+    // `usize::MAX >> 3` is tokio's Semaphore::MAX_PERMITS; one past it is the
+    // smallest value that used to panic `Semaphore::new` (exit 101).
+    let huge = (usize::MAX >> 3).wrapping_add(1).to_string();
+    let (code, _stdout, stderr) = run(s7cmd_cmd().args(["batch-run", "--parallel", &huge, "-"]));
+    assert_eq!(
+        code,
+        Some(2),
+        "must be a clean exit 2, not a panic; stderr={stderr}"
+    );
+}
+
+#[test]
+fn batch_run_parallel_overflow_value_exits_2() {
+    // Larger than usize::MAX → must fail to parse cleanly, not overflow/panic.
+    let (code, _stdout, _stderr) =
+        run(s7cmd_cmd().args(["batch-run", "--parallel", "99999999999999999999999999", "-"]));
+    assert_eq!(code, Some(2));
+}
+
+#[test]
+fn batch_run_parallel_at_cap_is_accepted() {
+    // MAX_PARALLEL (1024) itself must parse and run: with the closed stdin of
+    // `s7cmd_cmd` the run completes with a 0-command summary (exit 0), and
+    // `Semaphore::new(1024)` does not panic. Guards against an off-by-one that
+    // would reject the documented maximum.
+    let (code, _stdout, stderr) = run(s7cmd_cmd().args(["batch-run", "--parallel", "1024", "-"]));
+    assert_eq!(
+        code,
+        Some(0),
+        "MAX_PARALLEL must be accepted and run; stderr={stderr}"
+    );
+}

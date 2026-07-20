@@ -1,6 +1,7 @@
 //! Sequential and parallel execution loops.
 
 use crate::batch_run::progress::Progress;
+use crate::batch_run::redact::redact_secrets;
 use crate::batch_run::summary::Summary;
 use crate::cli::Cmd;
 
@@ -98,7 +99,7 @@ fn log_start(line_no: usize, raw: &str) {
         line = line_no,
         event = "start",
         command = command_token(raw),
-        raw = raw,
+        raw = redact_secrets(raw).as_ref(),
         "line started",
     );
 }
@@ -139,7 +140,7 @@ async fn execute_line(line: PreparedLine, dispatch: &DispatchFn) -> (usize, i32)
                         event = "panicked",
                         exit_code = EXIT_CODE_PANIC,
                         command = command_token(raw_trimmed),
-                        raw = raw_trimmed,
+                        raw = redact_secrets(raw_trimmed).as_ref(),
                         panic = msg.as_str(),
                         "subcommand panicked",
                     );
@@ -156,7 +157,7 @@ async fn execute_line(line: PreparedLine, dispatch: &DispatchFn) -> (usize, i32)
                 reason = reason,
                 exit_code = EXIT_CODE_INVALID_LINE,
                 command = command_token(raw),
-                raw = raw,
+                raw = redact_secrets(raw).as_ref(),
                 "line invalid",
             );
             EXIT_CODE_INVALID_LINE
@@ -203,8 +204,10 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// The 3/4/130 literals avoid a cross-module dep just for three numbers;
 /// each bucket matches the progress-bar / summary bucket the code feeds.
 fn log_end(line_no: usize, raw: &str, code: i32) {
-    let raw = raw.trim_end();
-    let command = command_token(raw);
+    let trimmed = raw.trim_end();
+    let command = command_token(trimmed);
+    let redacted = redact_secrets(trimmed);
+    let raw = redacted.as_ref();
     match code {
         0 => tracing::info!(
             line = line_no,
