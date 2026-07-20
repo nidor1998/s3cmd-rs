@@ -274,7 +274,7 @@ mod tests {
     /// Drive the real `PipeSafeWriter` through its non-BrokenPipe arms. The
     /// BrokenPipe arms need stderr to be an actually-closed pipe and are
     /// exercised at process level by the e2e suites. Ported from s3util-rs
-    /// PR#25 (post-1.7.1).
+    /// 1.8.0 (originally PR#25).
     #[test]
     fn pipe_safe_writer_write_and_flush_pass_through() {
         use std::io::Write;

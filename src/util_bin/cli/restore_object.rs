@@ -57,6 +57,7 @@ pub async fn run_restore_object(
         &key,
         args.source_version_id.as_deref(),
         restore_request,
+        client_config.request_payer.clone(),
     )
     .await
     {

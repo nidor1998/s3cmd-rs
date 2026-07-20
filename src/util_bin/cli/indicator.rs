@@ -361,8 +361,8 @@ mod tests {
         join_handle.await.unwrap();
     }
 
-    // Ported from s3util-rs PR#25 (post-1.7.1), adapted to the vendored
-    // 7-parameter show_indicator signature.
+    // Ported from s3util-rs 1.8.0 (originally PR#25), adapted to the
+    // vendored 7-parameter show_indicator signature.
     #[tokio::test]
     async fn indicator_counts_mismatches_as_warnings() {
         // ETagMismatch / ChecksumMismatch must bump both their own counter and

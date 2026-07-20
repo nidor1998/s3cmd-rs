@@ -16,14 +16,31 @@ Ports the applicable fixes from s3sync [PR#246](https://github.com/nidor1998/s3s
 `batch-run` / CLI code found in a security review — inline-credential redaction in per-line logs, and a `--parallel`
 upper bound (see **Security** and **Fixed › batch-run** below).
 
+Those upstream PRs have since shipped: this release also updates the pinned libraries to their 2026-07-20 releases —
+s3sync `v1.60.0`, s3util-rs `v1.8.0`, s3rm-rs `v1.4.0`, s3ls-rs `v1.1.0` — bringing in the remaining library-side
+fixes and the new `--transition-default-minimum-object-size` option (see **Added** and **Changed** below), and
+reconciles the vendored runners with the released code (request-payer wiring, lifecycle-flag wiring, and the
+`fs_util::has_trailing_separator` helper).
+
+### Added
+
+#### s3util-rs
+
+- `put-bucket-lifecycle-configuration` gains `--transition-default-minimum-object-size`
+  (`varies_by_storage_class` or `all_storage_classes_128K`), sent to S3 as the request parameter of the same name.
+  S3 accepts the value only as a request parameter — never inside the lifecycle configuration document — so this is
+  the only way to preserve a non-default setting across a get-edit-put roundtrip
+  (see **Fixed › put-bucket-lifecycle-configuration** below).
+
 ### Security
 
 - Credential-related command line options no longer display their values in `--help` output when set via environment
   variables, on every subcommand: access keys, secret access keys, session tokens (`*_ACCESS_KEY`,
   `*_SECRET_ACCESS_KEY`, `*_SESSION_TOKEN`), and SSE-C key material (`*_SSE_C_KEY`, `*_SSE_C_KEY_MD5`). The
-  environment-variable names are still shown. Upstream fixes this in the (unreleased) mains of all four libraries;
-  until those ship in released crates, s7cmd enforces the same `hide_env_values` marking when it builds its clap
-  command tree, which becomes an idempotent no-op once the upstream releases catch up.
+  environment-variable names are still shown. The pinned releases of all four libraries (s3sync `v1.60.0`, s3rm-rs
+  `v1.4.0`, s3ls-rs `v1.1.0`, s3util-rs `v1.8.0`) now carry the same `hide_env_values` marking at the derive level;
+  s7cmd keeps enforcing it when it builds its clap command tree — an idempotent no-op today — as a guard against a
+  future upstream credential argument that misses the marking.
 - `batch-run` no longer echoes inline credential values from a script line into its logs. A per-line command may
   legally carry a credential on the command line (`--target-secret-access-key`, `--source-secret-access-key`,
   `--*-access-key`, `--*-session-token`, `--*-sse-c-key`, `--*-sse-c-key-md5`); batch-run logs each line's raw text as
@@ -49,14 +66,16 @@ upper bound (see **Security** and **Fixed › batch-run** below).
   are still allowed, and an explicit `--source-version-id` (other than `null`) is still accepted as a
   version-promotion operation.
 
-#### put-bucket-lifecycle-configuration (adapted from s3util-rs PR#25)
+#### put-bucket-lifecycle-configuration (from s3util-rs v1.8.0)
 
 - A top-level `TransitionDefaultMinimumObjectSize` key in the input JSON — as produced by
   `get-bucket-lifecycle-configuration` — is now rejected with guidance instead of being silently dropped. S3 accepts
   the value only as a request parameter, never inside the configuration document, so silently dropping it reset a
   bucket configured with `varies_by_storage_class` back to S3's default of `all_storage_classes_128K` on a
-  get-edit-put roundtrip. (Upstream additionally gains a `--transition-default-minimum-object-size` option; that flag
-  arrives in s7cmd with the next s3util-rs release.)
+  get-edit-put roundtrip. With s3util-rs `v1.8.0` the vendored runner adopts the released implementation: the
+  library's input structs reject *every* unknown JSON field (`deny_unknown_fields`), and the runner maps the
+  `TransitionDefaultMinimumObjectSize` rejection to guidance pointing at the new
+  `--transition-default-minimum-object-size` flag (see **Added**), which sends the value the way S3 accepts it.
 
 #### batch-run
 
@@ -71,18 +90,64 @@ upper bound (see **Security** and **Fixed › batch-run** below).
 - Added a "Security assumptions" section to the README, mirroring the sections the upstream PRs added to the
   s3sync / s3util-rs / s3rm-rs / s3ls-rs READMEs.
 
-### Pending upstream releases
+### Changed
 
-The remaining fixes in the referenced PRs live in the upstream *library* code that s7cmd consumes from crates.io
-(`s3sync = 1.59.0`, `s3util-rs = 1.7.1`, `s3rm-rs = 1.3.8`, `s3ls-rs = 1.0.3`), so they reach s7cmd automatically
-when the upstream crates publish releases containing them and the pins are bumped. Notably: `ONEZONE_IA` naming in
-`--storage-class` help/errors, stable same-second object-version replay ordering, SSE-C ETag source parameters,
-delete-marker size/ETag panics, `Expires`/`expiry-date` parse hardening, stricter S3-path and `--metadata`
-validation, annotation-API force-retry (s3sync PR#245); suspended-versioning buckets treated as versioned and
-delete-marker exclusion from attribute filters in `clean` (s3rm-rs PR#94); `--max-parallel-listings` leaf-scan
-enforcement and exact `--rate-limit-api` rates in `ls` (s3ls-rs PR#29); `--target-request-payer` wiring,
-`--transition-default-minimum-object-size`, transfer-verification hardening, and stricter input-JSON validation
-(`deny_unknown_fields`) in the `cp`/`mv`/bucket-admin family (s3util-rs PR#25).
+- s3sync `v1.59.0 -> v1.60.0`, s3util-rs `v1.7.1 -> v1.8.0`, s3rm-rs `v1.3.8 -> v1.4.0`, s3ls-rs
+  `v1.0.3 -> v1.1.0` (all released 2026-07-20). The fixes previously listed here as "pending upstream releases" are
+  now included. The user-visible changes beyond the sections above:
+  - **cp/mv/s3-to-stdout reads are version-pinned (s3util-rs).** Reads of a source object are pinned to the version
+    observed by the initial `HeadObject`, so an overwrite landing mid-download can no longer produce a silently
+    truncated copy or interleaved stdout bytes. **IAM impact:** the pinned reads carry a `versionId`, which S3
+    authorizes against `s3:GetObjectVersion` instead of `s3:GetObject`. Reading from a bucket that has (or ever had)
+    versioning enabled now requires `s3:GetObjectVersion` (plus `s3:GetObjectVersionTagging` where tags are read, and
+    `s3:DeleteObjectVersion` for `mv`); least-privilege policies granting only the unversioned actions will start
+    failing with `AccessDenied`. Unversioned buckets are unaffected; `--source-version-id` still takes precedence.
+  - **`--target-request-payer` is now actually sent** by `rm`, `head-object`, `get-object-tagging`,
+    `put-object-tagging`, `restore-object`, `presign`, and the target-exists probe of `cp --skip-existing` (the flag
+    was previously parsed and discarded, yielding `403` on Requester Pays buckets). The vendored runners wire the
+    parameter through the updated s3util-rs API signatures. For `presign`, `x-amz-request-payer` becomes part of the
+    URL's signature, so whoever fetches the URL must send `x-amz-request-payer: requester` as well.
+  - **`put-*` JSON inputs reject unknown fields (s3util-rs `deny_unknown_fields`),** matching the AWS CLI's "Unknown
+    parameter" behavior. A misspelled or wrongly nested key previously vanished silently and the truncated remainder
+    replaced the whole bucket configuration — most severely, piping `get-public-access-block` output (wrapped in a
+    `PublicAccessBlockConfiguration` key) straight back into `put-public-access-block` parsed as "all four flags
+    absent" and disabled every public-access protection on the bucket.
+  - **`clean` versioning semantics (s3rm-rs).** Versioning-*suspended* buckets are treated as versioned, so
+    `--delete-all-versions` permanently removes historical versions and delete markers instead of degrading to
+    versionless deletes; `--keep-latest-only` and `--filter-delete-marker-only` no longer reject suspended buckets.
+    Delete markers are excluded from the size/content-type/metadata/tag filters (a marker has none of those
+    attributes, and deleting a latest marker resurrects the object it hides); `--filter-delete-marker-only` now
+    conflicts with those filters, and markers no longer abort filtered `--delete-all-versions` runs (the
+    `HeadObject`/`GetObjectTagging` HTTP 405 on a marker version is skipped rather than cancelling the pipeline).
+  - **`ls` listing fidelity (s3ls-rs).** `--max-parallel-listings` is enforced for deep-prefix (leaf) listings —
+    previously the permit was released before each leaf scan, allowing unbounded concurrent `ListObjectsV2` calls —
+    and `--rate-limit-api` enforces the exact requested rate instead of rounding down to a multiple of 10.
+  - **`sync` hardening (s3sync).** `ONEZONE_IA` naming in `--storage-class`/`--annotation-storage-class`; stable
+    object-version ordering when versions share a last-modified second; `--check-etag` with SSE-C uses the *source*
+    SSE-C parameters for the source ETag; `--force-retry-count` applies to `HeadObject` and the object-annotation
+    APIs; a `DeleteMarker` reports size 0 / no ETag instead of panicking; invalid `Expiration`/`Expires` values warn
+    instead of panicking; stricter S3-path-prefix and `--metadata` validation; downloads verify on the temporary file
+    before it is persisted (an object failing verification never becomes visible at the destination).
+  - **`cp`/`mv` transfer verification hardening (s3util-rs).** Buffer sizes derived from server-reported part sizes
+    are validated (a hostile or non-compliant endpoint can no longer force an allocation abort); two reachable panics
+    in the transfer paths now return errors; single-part server-side copies no longer double-count progress bytes;
+    S3-to-stdout ETag/checksum verification computes correct digests incrementally (no spurious exit-3 mismatches, no
+    whole-object buffering); ETag-shape mismatches are explained (`--auto-chunksize` hint) instead of being reported
+    as corruption; `--disable-additional-checksum-verify` is honoured on downloads; `--if-none-match` and the
+    metadata/content-header flags now apply to stdin uploads on both the buffered and multipart paths; downloads
+    verify on the temporary file before persisting, as in `sync`.
+- aws-sdk-s3 `v1.137.0 -> v1.138.1`; the re-exported AWS SDK minors are synced to match the new library releases
+  (aws-config `1.9`, aws-smithy-runtime-api `1.13`, aws-smithy-types `1.6`), keeping the dependency tree unified.
+- MSRV `1.91.1 -> 1.94.1` (required by the updated libraries).
+
+### Underlying libraries
+
+```toml
+s3sync = "=1.60.0"
+s3util-rs = "=1.8.0"
+s3rm-rs = "=1.4.0"
+s3ls-rs = "=1.1.0"
+```
 
 ## [1.5.0] - 2026-07-11
 

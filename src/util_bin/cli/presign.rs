@@ -24,8 +24,14 @@ pub async fn run_presign(args: PresignArgs, client_config: ClientConfig) -> Resu
         .map_err(|e| anyhow::anyhow!("{}", e.trim_end()))?;
 
     let client = client_config.create_client().await;
-    let url = api::presign_get_object(&client, &bucket, &key, Duration::from_secs(args.expires_in))
-        .await?;
+    let url = api::presign_get_object(
+        &client,
+        &bucket,
+        &key,
+        Duration::from_secs(args.expires_in),
+        client_config.request_payer.clone(),
+    )
+    .await?;
     println!("{url}");
     Ok(ExitStatus::Success)
 }

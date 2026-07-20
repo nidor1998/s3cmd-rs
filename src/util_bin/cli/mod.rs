@@ -3,12 +3,11 @@
 // Adjustments: stripped #[cfg(test)] mod tests; commented out per-subcommand
 //              pub mod declarations (re-enabled per task as files land);
 //              kept ExitStatus, EXIT_CODE_*, run_copy_phase, build_rate_limiter.
-// Includes fixes ported from s3util-rs PR#25 (post-1.7.1):
+// Includes fixes from s3util-rs 1.8.0 (originally PR#25):
 //   - is_user_cancellation: a worker failure that cancels the pipeline token
 //     is reported as a failure (exit 1), not a SIGINT cancellation (exit 130);
 //   - extract_keys: a local target with a trailing '/' resolves to
-//     <dir>/<basename> on every platform (adapted to 1.7.1's
-//     fs_util::is_key_a_directory — has_trailing_separator lands later).
+//     <dir>/<basename> on every platform (fs_util::has_trailing_separator).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -666,10 +665,8 @@ pub(super) fn extract_keys(config: &Config) -> Result<(String, String)> {
             // The separator test must accept '/' on Windows too, so that `out/`
             // resolves to `out/<basename>` rather than staying the literal key
             // `out/`, which the storage layer would treat as a directory and
-            // silently write nothing for. (Upstream calls
-            // fs_util::has_trailing_separator, introduced after 1.7.1;
-            // is_key_a_directory is the same trailing-separator test.)
-            if p.is_dir() || fs_util::is_key_a_directory(&p.to_string_lossy()) {
+            // silently write nothing for.
+            if p.is_dir() || fs_util::has_trailing_separator(&p.to_string_lossy()) {
                 p.join(&source_basename).to_string_lossy().to_string()
             } else {
                 p.to_string_lossy().to_string()

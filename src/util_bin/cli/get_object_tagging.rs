@@ -27,7 +27,15 @@ pub async fn run_get_object_tagging(
 
     let client = client_config.create_client().await;
 
-    match api::get_object_tagging(&client, &bucket, &key, args.source_version_id.as_deref()).await {
+    match api::get_object_tagging(
+        &client,
+        &bucket,
+        &key,
+        args.source_version_id.as_deref(),
+        client_config.request_payer.clone(),
+    )
+    .await
+    {
         Ok(out) => {
             let json = get_object_tagging_to_json(&out);
             let pretty = serde_json::to_string_pretty(&json)?;
