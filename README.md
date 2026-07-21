@@ -625,6 +625,86 @@ In plain terms: at v1.6.0 the failure modes most likely to cause silent harm —
 
 </details>
 
+### AI assessment of safety and correctness (by Codex)
+
+<details>
+<summary>Click to expand the full assessment</summary>
+
+> Assessment date: 2026-07-22.
+>
+> Assessed tree: `main` at `839acc3`. The Rust implementation and build inputs are identical to v1.6.0 (`c454694`); the commits after that tag change README content only.
+>
+> Complete review boundary: all 84 Rust files under `src/` were examined in full, including their 477 embedded tests, rather than sampling high-risk modules. The review also covered all 63 offline process-test files, `tests/common/mod.rs`, all 28 `e2e_*.rs` suites, `Cargo.toml`, `Cargo.lock`, `build.rs`, `.cargo/config.toml`, `deny.toml`, `Dockerfile`, and all five GitHub Actions workflows. The four exact-pinned engine crates were checked at the interfaces and guarantees on which this wrapper relies; they remain separate dependencies, not source owned by this repository. Conclusions were derived from code and executable evidence, not from the neighboring assessment text.
+>
+> Coverage evidence: the supplied `lcov.info` (SHA-256 `2da2901598bffa46b6fda6718c815e34701d24870c3e9f9a984a2da1b28bb22a`) and `llvm-cov-report.txt` (SHA-256 `f7fa71e841669bbb65673fe311832c7f12752b5218b3c9258a45e7a0053daffb`) were parsed independently. Their line and function totals agree exactly.
+>
+> Limits: this was source review plus deterministic local verification, not formal proof. No fuzzing, Miri, sanitizers, fault injection, penetration test, or fresh live-AWS run was performed. The E2E configuration was compiled and linted, while its prior live execution is represented only by the supplied coverage artifacts.
+
+#### Bottom line
+
+No critical vulnerability was found in s7cmd's own code, and the ordinary Amazon S3 paths show strong defensive engineering. The wrapper has complete dispatch coverage, contains per-line batch failures instead of terminating the process, protects credential values in help and batch logs, and preserves dry-run and transfer-integrity controls. There is no `unsafe` block in production code and no production subprocess execution or shell evaluation; `batch-run` parses and dispatches commands in-process.
+
+I would nevertheless describe v1.6.0 as **conditionally reliable, not safety-certified**. One narrow `mv` case can still delete an object, and batch input/cancellation behavior has availability and result-reporting defects. These are concrete open findings, not hypothetical objections to AI-generated code.
+
+#### Open findings, ordered by operational impact
+
+| Impact / priority | Finding | Consequence and boundary |
+|---|---|---|
+| High impact, narrow trigger | The `mv` self-move guard compares source and target endpoint strings literally (`src/util_bin/cli/mv.rs:65-77`). Equivalent spellings of the same service therefore bypass the guard. | With the same bucket and resolved key on an unversioned or version-suspended bucket, copy-then-delete can delete the object just written. The operator must explicitly construct this endpoint mismatch; bucket versioning is the strongest mitigation. Endpoint canonicalization or an explicit same-service override would close it. |
+| Moderate | Batch memory is not bounded in aggregate. Default mode collects every parsed line in a `Vec` (`src/batch_run/parser.rs:60-88`), while streaming mode feeds an `unbounded_channel` (`src/batch_run/mod.rs:361`). | The 16 KiB per-line limit prevents a single-line allocation attack but not a huge script, and a fast streaming producer can outpace a slow S3 command until memory is exhausted. A total-line/byte cap and a bounded channel would make the resource guarantee real. |
+| Moderate | Cancellation is reported inconsistently. `ls` maps cancellation to 0 (`src/ls_bin/mod.rs:75-78`); `sync` can complete a cancelled pipeline without a distinct cancellation status; and `clean` returns 0 as soon as it encounters any cancellation error, even if the same collected error set contains real deletion failures (`src/clean_bin/mod.rs:98-124`). | Automation and `batch-run` can classify interrupted work as success. In `clean`, a genuine error may be masked. Error aggregation should retain real errors and use one cancellation code, preferably 130, across engines. |
+| Moderate | Streaming stdin is not promptly cancellable. After fail-fast or SIGINT the executor drains the channel and awaits its closure, then `run_streaming` awaits the reader (`src/batch_run/executor.rs:484-505,579-582`; `src/batch_run/mod.rs:399-412`). Tokio's stdin read can remain blocked until the producer closes the pipe. | `batch-run --streaming -` can hang after SIGINT or an early failure when stdin stays open. The process test explicitly documents that EOF is load-bearing (`tests/cli_sigint.rs:68-105`). A cancellable reader design or documented external pipe closure is required. |
+| Low to moderate | Parallel stop checks occur before awaiting the next channel item or semaphore permit, with no re-check after the await (`src/batch_run/executor.rs:398-430,537-577`). | A SIGINT or reached error threshold can allow one already-queued command to start afterward. Because that command installs its own handler after the signal, it may run to completion. |
+| Low to moderate | Exit aggregation understates some failures. All nonstandard codes, including caught panic 101, rank below warning 3 and not-found 4 (`src/batch_run/executor.rs:289-313`); streaming reader failure uses numeric `max(code, 1)` (`src/batch_run/mod.rs:402-411`). | A batch containing a panic plus a warning can exit 3/4, and a reader error after a warning can retain the warning code. Error-level logs remain accurate, but exit-code-only automation is not. |
+| Low, availability | Nine JSON file/stdin inputs are read with unbounded `read_to_string` before parsing or sending: policy, CORS, encryption, lifecycle, logging, notification, replication, website, and public-access-block. | A mistaken or hostile multi-gigabyte input can exhaust memory. The annotation payload paths correctly demonstrate the bounded-read pattern and should be reused. |
+
+Additional correctness edges are smaller but real. `rename` reports missing source/bucket as general error 1 while many sibling commands use not-found 4 (`src/util_bin/cli/rename.rs:52-58`). `mv --no-fail-on-verify-error` can delete the source and return success despite a verification warning, whereas `cp` returns warning 3. Annotation file output flushes, re-reads, verifies, and atomically renames, but does not `sync_all`, so its promise covers process crashes and detected corruption rather than power-loss durability (`src/util_bin/cli/get_object_annotation.rs:181-224`). Positional arguments inherited from the engine CLIs are environment-backed, so exported `SOURCE`, `TARGET`, or policy variables can silently fill destructive command arguments. There is no confirmation prompt outside `clean`.
+
+`--dry-run` prevents mutations, but it is not a no-I/O or no-network guarantee. Client construction happens first and may perform credential-provider work. `sync`, `clean`, and transfer planning can enumerate or inspect S3 state; thin-wrapper examples include `cp --skip-existing`, annotation synchronization, and `create-bucket --if-not-exists`, which perform read-only S3 checks before deciding what they would do (`src/util_bin/cli/cp.rs:17-33`; `src/util_bin/cli/create_bucket.rs:45-64`). This is safe with respect to S3 state but matters in isolated environments and when metadata/SSO credential providers are enabled.
+
+#### Safety controls that held under full-source review
+
+- The 56-variant command enum has a corresponding non-exiting dispatch path. Configuration failures return 2 instead of invoking upstream `clap::Error::exit`, so one bad batch line cannot terminate its siblings (`src/dispatch.rs`). The large transfer futures are boxed to avoid known small-stack overflows.
+- All 34 mutating command surfaces expose `--dry-run`. Thin wrappers return before their mutation calls, while `cp`, `mv`, `sync`, and `clean` carry the flag into their pinned engines. The live E2E corpus contains a state-unchanged case for every mutating command. Read-only setup and planning can still contact S3 as described above.
+- `mv` normally has a sound deletion decision tree: no delete after cancellation, copy error, or verification warning without the explicit override; it checks cancellation again immediately before delete and pins deletion to the source version actually read (`src/util_bin/cli/mv.rs:100-161`). The endpoint-equivalence gap above is before that tree, not a failure of those gates.
+- Annotation upload and download enforce the 1 MiB limit with bounded streaming reads. Upload sends Content-MD5 and CRC64NVME and verifies the returned checksum; download verifies content length plus available checksums, rejects unsupported returned algorithms cleanly, writes beside the target, re-verifies the saved bytes, then atomically persists. A pre-existing destination survives verification failure (`src/util_bin/cli/put_object_annotation.rs:44-100`; `get_object_annotation.rs:87-224,315-394`).
+- `batch-run` enforces a 16 KiB line limit incrementally, rejects invalid UTF-8, tokenizes with `shlex`, rejects nested batches, stdin/stdout conflicts and per-line tracing, caps `--parallel` at 1024, and converts parse/validation errors into per-line exit 2. Dispatch is wrapped in `catch_unwind`, and all build profiles retain `panic = "unwind"`, so a subcommand panic becomes a recorded exit 101 instead of tearing down the batch (`src/batch_run/`; `Cargo.toml:103-113`).
+- Credential values are hidden from env-aware help output across the complete clap tree (`src/cli.rs:486-517`). Batch log redaction handles both `--flag value` and `--flag=value`, including the malformed-quoting fallback (`src/batch_run/redact.rs`). The pinned engine credential types redact `Debug` output and zeroize secret fields, so the remaining trace-level full-config logs do not print secret keys or session tokens. Access-key identifiers may remain partially visible by design.
+- Production source contains no direct `unsafe`, no shell invocation, and no process-spawning API. Lua support is inherited from s3sync's default features and deliberately expands the binary's attack surface, but Lua runs only operator-supplied filter code rather than data received from S3.
+
+#### Tests, coverage, and what the numbers mean
+
+The supplied report totals are 97.63% regions (14,282/14,629), 96.94% functions (1,110/1,145), and 98.55% lines (10,297/10,448). There are no branch records: both artifacts report zero measured branches. The line and function figures are internally consistent, but two qualifications prevent treating 98.55% as production-only coverage:
+
+1. `lcov.info` includes functions named under `::tests::` and line records from `#[cfg(test)]` modules—for example, the `mv` fake storage and tests above line 900. The 10,448-line denominator therefore mixes product and test implementation. Similarly, the README's 16,949 physical lines under `src/` include the 477 embedded tests; they are not all production lines.
+2. The loopback mock records method and request target, then drains request bodies without retaining them and exposes no captured request headers (`tests/common/mod.rs:200-259`). Most offline wrapper tests therefore prove parsing, routing, status mapping, and response handling, but not exact outbound JSON or signed headers. Live-AWS round trips provide the stronger payload evidence and are not a CI gate.
+
+The corpus is broad: 477 embedded test annotations, 692 annotations in 63 offline process-test files, and 258 annotations in 28 gated live-AWS files. Some tests are explicitly coverage-oriented rather than behavioral—for example, local sync tests ignore `run`'s result—so count and coverage must be read alongside assertion quality.
+
+During this assessment, these commands passed without warnings or failures:
+
+- `cargo fmt --all --check`
+- `cargo test --all-features --locked`
+- `cargo clippy --all-features --all-targets --locked -- -D warnings`
+- `RUSTFLAGS="--cfg e2e_test" cargo clippy --all-features --all-targets --locked -- -D warnings`
+- `cargo deny -L error check` (`advisories`, `bans`, `licenses`, and `sources` all clean)
+
+The E2E tests were compiled by the second clippy run but not executed because doing so mutates a configured AWS account. Default `cargo test` correctly sees those gated files as zero-test targets.
+
+#### Dependency and delivery assessment
+
+The four engine crates are exact-pinned and the lockfile is committed. Release and publish jobs use `--locked`, produce SHA-256 files, and attest release archives. The resolved HTTP stack uses rustls 0.23.42; `openssl-sys` is absent and explicitly denied. Cargo-deny rejects unknown registries and git sources and has no ignored advisories.
+
+The remaining supply-chain weaknesses are conventional rather than runtime defects: most GitHub Actions are referenced by mutable major-version tags rather than commit SHAs; CI follows moving `stable`; the gating clippy job omits `--all-features --all-targets`; CI does not compile the `e2e_test` configuration or gate on coverage; release jobs do not rerun tests; and the Dockerfile uses mutable base tags and builds without `--locked`. These do not invalidate the tested source tree, but they weaken reproducibility and increase the trust placed in workflow dependencies.
+
+#### Reliability conclusion
+
+For routine, supervised Amazon S3 use, the evidence supports the tool's core claims: routing is exhaustive, mutation previews exist everywhere, credential handling is deliberate, transfer deletion is normally gated, annotation bytes receive unusually strong integrity treatment, and failures generally become structured nonzero results. I found no path in the ordinary same-endpoint flow that silently mutates the wrong S3 resource, no designed logging path that emits credential secrets, and no dry-run path that invokes an S3 mutation.
+
+For unattended destructive automation, the conditions matter. Canonicalize and keep source/target endpoints identical for same-service `mv`, enable bucket versioning for valuable data, bound or trust batch inputs, close streaming stdin on cancellation, and monitor error logs in addition to the final exit code. Until the `mv` endpoint comparison, aggregate batch bounds, and cancellation/error aggregation are fixed, those controls are part of the safety model rather than optional operational advice.
+
+</details>
+
 ### Scope
 
 s7cmd is designed to cover **Amazon S3 object operations and bucket
