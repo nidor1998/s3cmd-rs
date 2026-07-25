@@ -691,6 +691,99 @@ fn auto_complete_shell_env_does_not_lift_cp_paths() {
     );
 }
 
+// ---- SOURCE / TARGET env vars must not populate positionals ----
+//
+// Through s3sync 1.60.0 / s3util-rs 1.8.0 / s3rm-rs 1.4.0 / s3ls-rs 1.1.0 the
+// positional source/target args carried clap's `env` attribute, so exported
+// SOURCE / TARGET variables silently supplied them: `TARGET=s3://b s7cmd
+// clean` deleted from the env-named bucket, and an unrelated exported TARGET
+// satisfied every util subcommand's required target. The pinned 1.61.0 /
+// 1.9.0 / 1.5.0 / 1.2.0 releases drop `env` from every positional; these
+// tests pin that behavior against an upstream regression.
+
+#[test]
+fn source_target_env_do_not_supply_sync_paths() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd()
+        .arg("sync")
+        .env("SOURCE", "s3://env-source-bucket")
+        .env("TARGET", "s3://env-target-bucket"));
+    assert_eq!(
+        code,
+        Some(2),
+        "sync must still require positional source/target with SOURCE/TARGET exported; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("source"),
+        "expected missing source error; got: {stderr}"
+    );
+}
+
+#[test]
+fn target_env_does_not_supply_clean_target() {
+    // The most dangerous variant: before the fix, `clean` with no positional
+    // proceeded toward a real deletion pipeline against the env-named bucket.
+    let (code, _stdout, stderr) = run(s7cmd_cmd()
+        .arg("clean")
+        .env("TARGET", "s3://env-target-bucket"));
+    assert_eq!(
+        code,
+        Some(2),
+        "clean must still require a positional target with TARGET exported; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("required"),
+        "expected missing target error; got: {stderr}"
+    );
+}
+
+#[test]
+fn source_target_env_do_not_supply_cp_paths() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd()
+        .arg("cp")
+        .env("SOURCE", "s3://env-source-bucket")
+        .env("TARGET", "s3://env-target-bucket"));
+    assert_eq!(
+        code,
+        Some(2),
+        "cp must still require positional source/target with SOURCE/TARGET exported; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("required"),
+        "expected missing source/target error; got: {stderr}"
+    );
+}
+
+#[test]
+fn target_env_does_not_supply_util_target() {
+    let (code, _stdout, stderr) = run(s7cmd_cmd()
+        .arg("get-bucket-versioning")
+        .env("TARGET", "s3://env-target-bucket"));
+    assert_eq!(
+        code,
+        Some(2),
+        "TARGET env var must not satisfy the required target; stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("required"),
+        "expected missing-required parse error; got: {stderr}"
+    );
+}
+
+#[test]
+fn target_env_invalid_value_is_not_parsed() {
+    // If the env source were still wired, clap would run the value parser on
+    // the env value and fail with an invalid-value error; the fix means the
+    // variable is never even read.
+    let (code, _stdout, stderr) = run(s7cmd_cmd()
+        .arg("get-bucket-versioning")
+        .env("TARGET", "notavalidpath"));
+    assert_eq!(code, Some(2));
+    assert!(
+        stderr.to_lowercase().contains("required") && !stderr.contains("invalid value"),
+        "env value must be ignored entirely, not parsed; got: {stderr}"
+    );
+}
+
 // ---- batch-run --parallel upper bound ----
 //
 // `--parallel` is capped at MAX_PARALLEL (1024). An oversized or overflowing

@@ -489,8 +489,8 @@ fn build_cli_command() -> clap::Command {
 /// current value of an arg's env var into help text by default; the env var
 /// *name* stays visible, only the value is suppressed.
 ///
-/// Upstream fixes this at the derive level: s3sync 1.60.0, s3rm-rs 1.4.0,
-/// s3ls-rs 1.1.0, and s3util-rs 1.8.0 (the releases s7cmd pins) all mark
+/// Upstream fixes this at the derive level: s3sync 1.61.0, s3rm-rs 1.5.0,
+/// s3ls-rs 1.2.0, and s3util-rs 1.9.0 (the releases s7cmd pins) all mark
 /// their credential args `hide_env_values = true`, so this pass is an
 /// idempotent no-op today. It is kept as a guard: a future upstream release
 /// that adds a credential arg without the marking (or drops it) is re-hidden
@@ -627,8 +627,8 @@ mod tests {
     /// Every env-backed credential argument across every subcommand must be
     /// `hide_env_values` so `--help` never echoes a secret exported through
     /// the environment. Mirrors the upstream guard test added by s3util-rs
-    /// PR#25. The pinned upstream releases (s3sync 1.60.0, s3rm-rs 1.4.0,
-    /// s3ls-rs 1.1.0, s3util-rs 1.8.0) now carry their own
+    /// PR#25. The pinned upstream releases (s3sync 1.61.0, s3rm-rs 1.5.0,
+    /// s3ls-rs 1.2.0, s3util-rs 1.9.0) now carry their own
     /// `hide_env_values = true` markings; `hide_credential_env_values` backs
     /// them up so a future upstream credential arg that misses the marking
     /// still cannot leak.

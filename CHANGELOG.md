@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-07-25
+
+Monthly update.
+
+Bug-fix release. The pinned libraries are updated to their 2026-07-25 releases — s3sync `v1.61.0`, s3util-rs `v1.9.0`,
+s3rm-rs `v1.5.0`, s3ls-rs `v1.2.0` — which all carry the same fix: positional arguments no longer read values from
+environment variables (see **Fixed** below). No s7cmd-side code changes were required beyond the dependency bump;
+regression tests pin the new behavior.
+
+### Fixed
+
+#### All subcommands
+
+- Exported `SOURCE` / `TARGET` environment variables no longer silently supply positional arguments. The underlying
+  libraries declared every positional source/target argument with clap's `env` attribute, so an unrelated exported
+  variable named after a positional was parsed as if it had been passed on the command line: `TARGET=s3://bucket
+  s7cmd clean` proceeded toward a real deletion pipeline against the env-named bucket, `SOURCE`/`TARGET` satisfied
+  `sync` and `cp` paths, an exported `TARGET` satisfied every util subcommand's otherwise-required target (e.g.
+  `head-bucket`, `get-bucket-versioning`), and `ls` listed the env-named target instead of falling back to
+  bucket-listing mode. The updated libraries drop the `env` attribute from every positional argument; positionals now
+  come only from the command line. Explicitly passed positionals were never affected (command-line values always took
+  precedence).
+
+### Changed
+
+- Updated pinned engine libraries: s3sync `1.60.0` → `1.61.0`, s3util-rs `1.8.0` → `1.9.0`, s3rm-rs `1.4.0` →
+  `1.5.0`, s3ls-rs `1.1.0` → `1.2.0`. Aside from the positional env-var fix above, the releases are otherwise
+  identical to the previously pinned versions; the vendored CLI frontends required no reconciliation.
+
 ## [1.6.0] - 2026-07-20
 
 Monthly update.
