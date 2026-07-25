@@ -7,18 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.7.0] - 2026-07-25
 
-Monthly update.
-
-Bug-fix release. The pinned libraries are updated to their 2026-07-25 releases — s3sync `v1.61.0`, s3util-rs `v1.9.0`,
-s3rm-rs `v1.5.0`, s3ls-rs `v1.2.0` — which all carry the same fix: positional arguments no longer read values from
-environment variables (see **Fixed** below). No s7cmd-side code changes were required beyond the dependency bump;
-regression tests pin the new behavior.
+Bug-fix release. 
 
 ### Fixed
 
 #### All subcommands
 
-- Exported `SOURCE` / `TARGET` environment variables no longer silently supply positional arguments. The underlying
+- [Breaking change] Exported `SOURCE` / `TARGET` environment variables no longer silently supply positional arguments. The underlying
   libraries declared every positional source/target argument with clap's `env` attribute, so an unrelated exported
   variable named after a positional was parsed as if it had been passed on the command line: `TARGET=s3://bucket
   s7cmd clean` proceeded toward a real deletion pipeline against the env-named bucket, `SOURCE`/`TARGET` satisfied
@@ -28,11 +23,21 @@ regression tests pin the new behavior.
   come only from the command line. Explicitly passed positionals were never affected (command-line values always took
   precedence).
 
-### Changed
+#### s3util-rs
 
-- Updated pinned engine libraries: s3sync `1.60.0` → `1.61.0`, s3util-rs `1.8.0` → `1.9.0`, s3rm-rs `1.4.0` →
-  `1.5.0`, s3ls-rs `1.1.0` → `1.2.0`. Aside from the positional env-var fix above, the releases are otherwise
-  identical to the previously pinned versions; the vendored CLI frontends required no reconciliation.
+- `put-bucket-lifecycle-configuration` now accepts lifecycle `Date` values carrying an ISO 8601 numeric UTC offset
+  (e.g. `2030-01-02T03:04:05+00:00`) in addition to `Z`; a non-zero offset is converted to UTC.
+  `get-bucket-lifecycle-configuration` emits dates with `+00:00`, so feeding its output back into
+  `put-bucket-lifecycle-configuration` failed with `invalid ISO 8601 timestamp` for any date-based rule.
+
+### Underlying libraries
+
+```toml
+s3sync = "=1.61.0"
+s3util-rs = "=1.9.0"
+s3rm-rs = "=1.5.0"
+s3ls-rs = "=1.2.0"
+```
 
 ## [1.6.0] - 2026-07-20
 
