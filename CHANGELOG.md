@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-07-25
+
+Bug-fix release. 
+
+### Fixed
+
+#### All subcommands
+
+- [Breaking change] Exported `SOURCE` / `TARGET` environment variables no longer silently supply positional arguments. The underlying
+  libraries declared every positional source/target argument with clap's `env` attribute, so an unrelated exported
+  variable named after a positional was parsed as if it had been passed on the command line: `TARGET=s3://bucket
+  s7cmd clean` proceeded toward a real deletion pipeline against the env-named bucket, `SOURCE`/`TARGET` satisfied
+  `sync` and `cp` paths, an exported `TARGET` satisfied every util subcommand's otherwise-required target (e.g.
+  `head-bucket`, `get-bucket-versioning`), and `ls` listed the env-named target instead of falling back to
+  bucket-listing mode. The updated libraries drop the `env` attribute from every positional argument; positionals now
+  come only from the command line. Explicitly passed positionals were never affected (command-line values always took
+  precedence).
+
+#### s3util-rs
+
+- `put-bucket-lifecycle-configuration` now accepts lifecycle `Date` values carrying an ISO 8601 numeric UTC offset
+  (e.g. `2030-01-02T03:04:05+00:00`) in addition to `Z`; a non-zero offset is converted to UTC.
+  `get-bucket-lifecycle-configuration` emits dates with `+00:00`, so feeding its output back into
+  `put-bucket-lifecycle-configuration` failed with `invalid ISO 8601 timestamp` for any date-based rule.
+
+### Underlying libraries
+
+```toml
+s3sync = "=1.61.0"
+s3util-rs = "=1.9.0"
+s3rm-rs = "=1.5.0"
+s3ls-rs = "=1.2.0"
+```
+
 ## [1.6.0] - 2026-07-20
 
 Monthly update.

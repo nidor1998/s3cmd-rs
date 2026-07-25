@@ -1,16 +1,18 @@
-//! Process-level CLI tests for the `ls` subcommand's broken-pipe handling.
-//! These run without AWS credentials or network access (they talk only to a
-//! loopback mock endpoint).
+//! Process-level CLI tests for the `ls` subcommand: broken-pipe handling and
+//! env-var isolation of the positional target. These run without AWS
+//! credentials or network access (they talk only to a loopback mock
+//! endpoint).
 //!
 //! `s7cmd ls | head -1`-style consumers close the pipe early; `ls` must treat
 //! the resulting `BrokenPipe` write error as a silent success (exit 0), in
 //! both bucket-listing mode (no target) and listing-pipeline mode (target
-//! prefix). Each test delays the mock response, closes the child's stdout
-//! immediately after spawn, and only then lets the listing arrive — so the
-//! child's first stdout flush hits a closed pipe deterministically.
+//! prefix). Each broken-pipe test delays the mock response, closes the
+//! child's stdout immediately after spawn, and only then lets the listing
+//! arrive — so the child's first stdout flush hits a closed pipe
+//! deterministically.
 
 mod common;
-use common::{MockResponse, MockS3Server, mock_target_args, s7cmd_cmd_clean_env};
+use common::{MockResponse, MockS3Server, mock_target_args, run, s7cmd_cmd_clean_env};
 
 use std::time::Duration;
 
@@ -64,6 +66,30 @@ fn bucket_listing_broken_pipe_exits_0() {
         code,
         Some(0),
         "BrokenPipe in bucket-listing mode must exit 0; stderr: {stderr}"
+    );
+}
+
+/// A `TARGET` env var must not supply `ls`'s optional positional. Through
+/// s3ls-rs 1.1.0 the positional carried clap's `env` attribute, so an
+/// exported TARGET was parsed as the listing target (an invalid value even
+/// failed the run at clap parse time); s3ls-rs 1.2.0 drops `env`. With the
+/// variable exported, `ls` must ignore it and fall back to bucket-listing
+/// mode against the mock endpoint.
+#[test]
+fn target_env_does_not_supply_ls_target() {
+    let server = MockS3Server::start(vec![MockResponse::new(200, LIST_BUCKETS_XML)]);
+    let (code, stdout, stderr) = run(s7cmd_cmd_clean_env()
+        .arg("ls")
+        .args(mock_target_args(&server.endpoint_url()))
+        .env("TARGET", "notavalidpath"));
+    assert_eq!(
+        code,
+        Some(0),
+        "TARGET env var must be ignored (bucket-listing mode); stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("mock-bucket-1"),
+        "expected bucket listing on stdout; got: {stdout}"
     );
 }
 

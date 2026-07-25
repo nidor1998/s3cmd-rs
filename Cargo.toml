@@ -1,6 +1,6 @@
 [package]
 name = "s7cmd"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2024"
 rust-version = "1.94.1"
 license = "Apache-2.0"
@@ -16,11 +16,11 @@ categories = ["command-line-utilities", "filesystem"]
 # s3sync's `lua_support` is in its default features; Lua flags
 # (--filter-callback-lua-script, etc.) automatically appear under
 # `s7cmd sync --help`. Use default-features = false to opt out.
-s3sync     = "=1.60.0"
-s3util-rs  = "=1.8.0"
+s3sync     = "=1.61.0"
+s3util-rs  = "=1.9.0"
 # Vendored bin code is sourced from these versions; pin minor.
-s3rm-rs    = "=1.4.0"
-s3ls-rs    = "=1.1.0"
+s3rm-rs    = "=1.5.0"
+s3ls-rs    = "=1.2.0"
 
 # Build-info for `s7cmd --version` (gated behind the `version` feature).
 shadow-rs = { version = "2", optional = true, default-features = false }
@@ -66,7 +66,7 @@ dyn-clone    = "1.0"
 serde_json   = "1"
 # Used by the vendored get-object-annotation runner to write the downloaded
 # payload to a temp file and atomically rename it into place. Pinned to the
-# same minor s3util-rs 1.8.0 vendors so the dep tree stays unified.
+# same minor s3util-rs 1.9.0 vendors so the dep tree stays unified.
 tempfile     = "3"
 
 [features]
@@ -83,7 +83,7 @@ uuid = { version = "1", features = ["v4"] }
 # tempfile is a regular dependency (see [dependencies]); it is therefore also
 # available to tests without a separate dev-dependency entry.
 # Used by the vendored get_object_annotation.rs unit tests to recompute the
-# MD5 an AES256 object's ETag encodes. Same minor s3util-rs 1.8.0 vendors.
+# MD5 an AES256 object's ETag encodes. Same minor s3util-rs 1.9.0 vendors.
 md5 = "0.8"
 # Used by mv.rs unit tests to implement a fake `StorageTrait` for the
 # source-delete decision tree. Already a transitive dep via s3util-rs;

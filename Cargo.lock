@@ -2843,9 +2843,9 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
 name = "s3ls-rs"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1734e45cddb7916945f830441779d9a980dc27ccdaa8a388d9898bade1d01fcd"
+checksum = "1b47be291c58d89c7647352a9aba480ec1117bcd439d50e7cef912de1e6e086c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2879,9 +2879,9 @@ dependencies = [
 
 [[package]]
 name = "s3rm-rs"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89fed70cc0f10da6541d03fe6f1c0146c97abdbaa4f2eb557c89a3dd27d025cf"
+checksum = "32d127b7552d7908708e5475b85dd8a73189211d603d20a32a265686fc14de50"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -2921,9 +2921,9 @@ dependencies = [
 
 [[package]]
 name = "s3sync"
-version = "1.60.0"
+version = "1.61.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1653378798b45cbf555361b287b226d120ddc97f8d5390108fbf5699d7ec14d0"
+checksum = "db4b2d5cac3398e17b4a731af28082254400c72b7d197a1a2510bfac7e9bb291"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -2983,9 +2983,9 @@ dependencies = [
 
 [[package]]
 name = "s3util-rs"
-version = "1.8.0"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99116d2992cdbaa894f23e66b2e1d082beb63d12d4cefb0b94b1cb6d83ef4468"
+checksum = "31386e4947da79fc9b7e25f53ae3f8d1a0f0b8f35dd0e3349332d20c6a0fbb8a"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3042,7 +3042,7 @@ dependencies = [
 
 [[package]]
 name = "s7cmd"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
