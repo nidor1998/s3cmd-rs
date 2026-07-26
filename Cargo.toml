@@ -1,6 +1,6 @@
 [package]
 name = "s7cmd"
-version = "1.7.0"
+version = "1.7.1"
 edition = "2024"
 rust-version = "1.94.1"
 license = "Apache-2.0"
@@ -16,11 +16,11 @@ categories = ["command-line-utilities", "filesystem"]
 # s3sync's `lua_support` is in its default features; Lua flags
 # (--filter-callback-lua-script, etc.) automatically appear under
 # `s7cmd sync --help`. Use default-features = false to opt out.
-s3sync     = "=1.61.0"
-s3util-rs  = "=1.9.0"
+s3sync     = "=1.61.1"
+s3util-rs  = "=1.9.1"
 # Vendored bin code is sourced from these versions; pin minor.
-s3rm-rs    = "=1.5.0"
-s3ls-rs    = "=1.2.0"
+s3rm-rs    = "=1.5.1"
+s3ls-rs    = "=1.2.1"
 
 # Build-info for `s7cmd --version` (gated behind the `version` feature).
 shadow-rs = { version = "2", optional = true, default-features = false }
@@ -28,9 +28,9 @@ shadow-rs = { version = "2", optional = true, default-features = false }
 # Re-export the same AWS SDK minor versions both libs use so Cargo unifies
 # the dep tree (otherwise you get two compiled copies and possible type
 # incompatibilities at API boundaries).
-aws-sdk-s3 = { version = "1.138", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
-aws-config = { version = "1.9", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "credentials-process", "sso"] }
-aws-smithy-runtime-api = "1.13"
+aws-sdk-s3 = { version = "1.140", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+aws-config = { version = "1.10", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio", "credentials-process", "sso"] }
+aws-smithy-runtime-api = "1.14"
 aws-smithy-types       = "1.6"
 
 # CLI / runtime
