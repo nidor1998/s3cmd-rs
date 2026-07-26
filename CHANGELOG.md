@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-07-26
+
+Dependency-refresh release. All four underlying libraries are updated to their 2026-07-26 releases, which are
+themselves dependency updates carrying a newer AWS SDK for Rust. There are no behavior changes in s7cmd's own code
+and no changes to any subcommand's interface or output; upgrading requires nothing beyond installing the new binary.
+
+### Changed
+
+- s3sync `v1.61.0 -> v1.61.1`
+- s3util-rs `v1.9.0 -> v1.9.1`
+- s3rm-rs `v1.5.0 -> v1.5.1`
+- s3ls-rs `v1.2.0 -> v1.2.1`
+- aws-sdk-s3 `v1.138.1 -> v1.140.0`
+- Updated other dependencies
+
+### Underlying libraries
+
+```toml
+s3sync = "=1.61.1"
+s3util-rs = "=1.9.1"
+s3rm-rs = "=1.5.1"
+s3ls-rs = "=1.2.1"
+```
+
 ## [1.7.0] - 2026-07-25
 
 Bug-fix release. 
