@@ -1,0 +1,139 @@
+name: Bug report
+description: Report a clear, reproducible bug in s7cmd. Bug reports only. This project accepts no feature requests and no questions of any kind.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Contributing
+
+        - Bug reports are welcome, but responses are not guaranteed.
+        - Since this project is considered functionally complete, I will not accept any feature requests.
+        - If you find this project useful, feel free to fork and modify it as you wish.
+
+        I consider this project "complete" and will maintain it only minimally going
+        forward. However, I intend to keep the AWS SDK for Rust and other dependencies
+        up to date monthly.
+
+        ## Before opening an issue
+
+        Please read the [Scope and Non-Goals](https://github.com/nidor1998/s7cmd/blob/main/README.md#scope)
+        and [Maintenance Model](https://github.com/nidor1998/s7cmd/blob/main/README.md#maintenance-model)
+        sections of the README first. **Issues asking about behavior already documented
+        in the README, including anything listed under Non-Goals, will be closed
+        without further discussion.** This is not a rejection of your input; it is the
+        project's documented scope and maintenance posture.
+
+        This form is for bug reports only. **Anything that is not a clear, reproducible
+        bug in s7cmd itself, including feature requests, questions, usage help,
+        configuration help, and discussion threads, will be closed unconditionally.**
+
+        **This project is intended for users who can self-resolve usage questions,
+        configuration issues, and environment-specific problems. Only clear,
+        reproducible bugs in s7cmd itself are accepted. Nothing else.** No support,
+        no questions, no feature requests, no usage help.
+
+        ## Issue lifecycle
+
+        Issues with no activity for 30 days are labeled `stale` and closed 7 days later
+        unless a new comment is added. Items labeled `pinned` or `security` are exempt.
+        Closed issues can always be reopened.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      description: >
+        Every box must be checked. Issues that do not qualify, or whose actual
+        content contradicts a box that was checked, are closed without review.
+      options:
+        - label: I have read and understood all of the explanatory text in this template above, including Contributing, Before opening an issue, and Issue lifecycle.
+          required: true
+        - label: I have read the README (including Scope and Non-Goals) and confirmed this issue is not already documented.
+          required: true
+        - label: I have searched existing issues (open and closed) and this is not a duplicate.
+          required: true
+        - label: This issue is a bug report. It is NOT a request for a new feature. I understand that s7cmd is functionally complete and accepts no new feature requests of any kind, under any circumstances.
+          required: true
+        - label: This issue is a report of a clear, reproducible bug in s7cmd itself. It is not a question, nor a request for usage or configuration help.
+          required: true
+        - label: I have reproduced this on the latest release of s7cmd. Only the latest release is supported.
+          required: true
+        - label: I am using Amazon S3. Issues regarding MinIO, Cloudflare R2, Ceph RGW or any other S3-compatible service are closed automatically, unconditionally, and without exception.
+          required: true
+        - label: I understand that if the actual content of this issue contradicts any box I have checked above, it will be treated as a violation of these prerequisites and closed unconditionally, without further discussion.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: s7cmd version
+      description: Output of `s7cmd --version`. Only the latest release is supported. Reports filed against any other version are closed automatically.
+      placeholder: "e.g. 1.4.2"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "e.g. macOS 14.5, Ubuntu 24.04, Windows 11"
+    validations:
+      required: true
+
+  - type: input
+    id: region
+    attributes:
+      label: Region
+      placeholder: "e.g. us-east-1, ap-northeast-1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: describe
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: To reproduce
+      description: >
+        Please include as much information about the failed command as possible:
+        the exact command line, the sequence of steps, and anything needed to
+        reproduce the failure from a clean state.
+      placeholder: |
+        1. Run `s7cmd ...`
+        2. ...
+        3. Observed failure
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: A clear and concise description of what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      description: Paste any error message or log output. This is automatically formatted as code, so no backticks are needed.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add any other context about the problem here.
+    validations:
+      required: false

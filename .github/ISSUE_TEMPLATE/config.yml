@@ -1,1 +1,9 @@
 blank_issues_enabled: false
+
+contact_links:
+  - name: Scope and Non-Goals
+    url: https://github.com/nidor1998/s7cmd/blob/main/README.md#scope
+    about: Behavior documented here — including anything under Non-Goals — is out of scope. Please read this before filing.
+  - name: Maintenance Model
+    url: https://github.com/nidor1998/s7cmd/blob/main/README.md#maintenance-model
+    about: This project is functionally complete. No feature requests, questions, or usage support.
