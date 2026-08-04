@@ -7,6 +7,7 @@
 //              and verify_saved_file_err_when_file_unreadable unit tests. The
 //              detect_checksum / check_integrity unsupported-algorithm handling
 //              tracks upstream 1.7.0.
+//              Report println made pipe-safe (ported from s3util-rs 1.9.2).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -23,6 +24,8 @@ use s3util_rs::output::json::get_object_annotation_to_json;
 use s3util_rs::storage::annotation;
 use s3util_rs::storage::checksum::AdditionalChecksum;
 use s3util_rs::storage::s3::api::{self, GetObjectAnnotationParams, ObjectAnnotationError};
+
+use crate::pipe_safe::println_pipe_safe;
 
 use super::ExitStatus;
 
@@ -377,7 +380,7 @@ pub async fn run_get_object_annotation(
         &key,
     )?;
 
-    println!("{}", serde_json::to_string_pretty(&json)?);
+    println_pipe_safe(&serde_json::to_string_pretty(&json)?)?;
     let outcome = if verified {
         "written and verified"
     } else {

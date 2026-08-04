@@ -1,6 +1,7 @@
 // Vendored from s3util-rs@0.2.0
 //   src/bin/s3util/cli/head_bucket.rs
 // Adjustments: no tests stripped; rewrote crate::cli → super
+//              Report println made pipe-safe (ported from s3util-rs 1.9.2).
 
 use anyhow::Result;
 
@@ -8,6 +9,8 @@ use s3util_rs::config::ClientConfig;
 use s3util_rs::config::args::head_bucket::HeadBucketArgs;
 use s3util_rs::output::json::head_bucket_to_json;
 use s3util_rs::storage::s3::api::{self, HeadError};
+
+use crate::pipe_safe::println_pipe_safe;
 
 use super::ExitStatus;
 
@@ -30,7 +33,7 @@ pub async fn run_head_bucket(
         Ok(out) => {
             let json = head_bucket_to_json(&out);
             let pretty = serde_json::to_string_pretty(&json)?;
-            println!("{pretty}");
+            println_pipe_safe(&pretty)?;
             Ok(ExitStatus::Success)
         }
         Err(HeadError::BucketNotFound) | Err(HeadError::NotFound) => {

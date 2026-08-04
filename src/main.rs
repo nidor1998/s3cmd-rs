@@ -1,6 +1,7 @@
 // s7cmd entry point. The per-subcommand dispatch table lives in
 // `dispatch.rs` so it can be reused by `batch_run`.
 
+use std::io::Write;
 use std::process::ExitCode;
 
 use clap::FromArgMatches;
@@ -11,6 +12,7 @@ mod clean_bin;
 mod cli;
 mod dispatch;
 mod ls_bin;
+mod pipe_safe;
 mod sync_bin;
 mod util_bin;
 
@@ -29,8 +31,7 @@ async fn main() -> ExitCode {
     // declares the field, but we clear the long name so the parser rejects
     // `s7cmd <sub> --auto-complete-shell ...`).
     if let Some(shell) = cli_args.auto_complete_shell {
-        generate(shell, &mut cli_command(), "s7cmd", &mut std::io::stdout());
-        return ExitCode::SUCCESS;
+        return print_completion_script(shell);
     }
 
     // arg_required_else_help on the Cli ensures we always have a command
@@ -43,6 +44,37 @@ async fn main() -> ExitCode {
 
     let exit_code = dispatch::dispatch(command).await;
     ExitCode::from(exit_code as u8)
+}
+
+/// Render the shell-completion script for `shell` and print it pipe-safely.
+///
+/// clap_complete's generators panic on writer errors ("failed to write
+/// completion file"), so they never touch stdout directly: the script is
+/// rendered into an infallible in-memory buffer and written in one
+/// pipe-safe pass. A reader that exits early
+/// (`s7cmd --auto-complete-shell bash | head 1`) yields exit 0; any other
+/// stdout write error is reported on stderr with exit 1.
+fn print_completion_script(shell: clap_complete::shells::Shell) -> ExitCode {
+    match pipe_safe::write_all_pipe_safe(&render_completion_script(shell)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            // Tracing is never initialized on this path; best-effort stderr.
+            let _ = writeln!(
+                std::io::stderr(),
+                "error: failed to write completion script: {e}"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Render the completion script for the whole s7cmd CLI into memory.
+/// Infallible: clap_complete only fails through its writer, and writes to
+/// a `Vec<u8>` cannot fail.
+fn render_completion_script(shell: clap_complete::shells::Shell) -> Vec<u8> {
+    let mut script = Vec::new();
+    generate(shell, &mut cli_command(), "s7cmd", &mut script);
+    script
 }
 
 /// Initialize the global tracing subscriber from whichever subcommand
@@ -135,5 +167,34 @@ fn init_tracing_for(cmd: &Cmd) {
 
     if let Some(tc) = tc {
         util_bin::tracing_init::init_tracing(&tc);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap_complete::shells::Shell;
+
+    /// The in-memory rendering must produce a real s7cmd completion script
+    /// for every supported shell. Rendering to a buffer is what keeps
+    /// clap_complete's panicking writer path away from stdout; the
+    /// closed-pipe behavior itself is pinned process-level in
+    /// `tests/cli_broken_pipe.rs`.
+    #[test]
+    fn render_completion_script_produces_s7cmd_completions() {
+        for shell in [
+            Shell::Bash,
+            Shell::Zsh,
+            Shell::Fish,
+            Shell::PowerShell,
+            Shell::Elvish,
+        ] {
+            let script = render_completion_script(shell);
+            let text = String::from_utf8(script).expect("completion script must be UTF-8");
+            assert!(
+                text.contains("s7cmd"),
+                "{shell:?} completion script must mention s7cmd"
+            );
+        }
     }
 }

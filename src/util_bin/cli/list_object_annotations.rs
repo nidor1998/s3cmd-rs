@@ -1,6 +1,8 @@
 // Vendored from s3util-rs@1.6.0
 //   src/bin/s3util/cli/list_object_annotations.rs
-// Adjustments: none — the upstream file already targets `super::ExitStatus`.
+// Adjustments: none beyond the note below — the upstream file already
+//              targets `super::ExitStatus`.
+//              Report println made pipe-safe (ported from s3util-rs 1.9.2).
 
 use anyhow::Result;
 
@@ -8,6 +10,8 @@ use s3util_rs::config::ClientConfig;
 use s3util_rs::config::args::list_object_annotations::ListObjectAnnotationsArgs;
 use s3util_rs::output::json::list_object_annotations_to_json;
 use s3util_rs::storage::s3::api::{self, HeadError, ListObjectAnnotationsParams};
+
+use crate::pipe_safe::println_pipe_safe;
 
 use super::ExitStatus;
 
@@ -42,7 +46,7 @@ pub async fn run_list_object_annotations(
         Ok(out) => {
             let json = list_object_annotations_to_json(&out);
             let pretty = serde_json::to_string_pretty(&json)?;
-            println!("{pretty}");
+            println_pipe_safe(&pretty)?;
             Ok(ExitStatus::Success)
         }
         Err(HeadError::BucketNotFound) => {
