@@ -5,6 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] - 2026-08-04
+
+Bug-fix release. Writing to a pipe whose reader has already exited crashed s7cmd on several output paths — piping to
+`head 1` (where `head` treats `1` as a file name, fails to open it, and never reads its input), `head -1` when the
+output is larger than the pipe buffer, `grep -q`, or a pager closed early. This release makes every such path
+pipe-safe, in s7cmd's own code and in the four underlying libraries, which shipped the same fixes and are updated
+here. There are no changes to any subcommand's interface or to what is printed when the pipe stays open; upgrading
+requires nothing beyond installing the new binary.
+
+### Fixed
+
+#### All subcommands
+
+- Generating a shell completion script into a closed pipe (`s7cmd --auto-complete-shell bash | head 1`) panicked
+  inside clap_complete with `failed to write completion file: ... Broken pipe`. The script is now rendered to an
+  in-memory buffer and written pipe-safely: a closed pipe is treated as the normal end of a pipeline and the command
+  exits 0 — note that under `set -o pipefail` such pipelines now succeed where the panic previously failed them. Any
+  other stdout write failure (e.g. disk full on a redirect) now exits 1 with an error message instead of panicking.
+
+#### Util subcommands that print a report
+
+- Piping report output to a consumer that stops reading before the output ends no longer panics with
+  `failed printing to stdout: Broken pipe (os error 32)`. Every subcommand that prints a JSON report or a URL to
+  stdout was affected: the `get-bucket-*` family, `get-public-access-block`, `head-bucket`, `head-object`,
+  `get-object-tagging`, `list-object-annotations`, `get-object-annotation`, `put-object-annotation`, and `presign`.
+  A closed pipe is now treated as the normal end of a pipeline: the S3 operation has already completed, so the
+  command exits 0; any other stdout write failure exits 1 with an error message. `cp` streaming an object to stdout
+  (and `get-object-annotation` writing its payload to `-`) is unchanged: a download truncated by a vanished reader
+  is still reported as a failure, because there the bytes are the object itself, not a report about a completed
+  operation. `ls` and the tracing output already handled closed pipes and are unchanged.
+
+#### cp / mv
+
+- The transfer result lines printed to stderr on completion (`-> s3://...` and `Transferred: ...`) panicked when
+  stderr was a closed pipe (e.g. `2>&1 | head`). They are now written best-effort, matching the tracing output,
+  which already ignored a closed stderr.
+
+#### batch-run
+
+- The end-of-run summary (both the human-readable line and the `--json-tracing` JSON object) panicked when stderr
+  was a closed pipe, turning an otherwise fully successful run into exit 101 (abnormal termination) after every
+  line had already executed. The summary is now written best-effort.
+
+### Changed
+
+- s3sync `v1.61.1 -> v1.61.2`
+- s3util-rs `v1.9.1 -> v1.9.2`
+- s3rm-rs `v1.5.1 -> v1.5.2`
+- s3ls-rs `v1.2.1 -> v1.2.2`
+
+These are the upstream releases of the same broken-pipe fixes; s7cmd vendors its command frontends, so the fixes
+are ported into the vendored code as well.
+
+### Underlying libraries
+
+```toml
+s3sync = "=1.61.2"
+s3util-rs = "=1.9.2"
+s3rm-rs = "=1.5.2"
+s3ls-rs = "=1.2.2"
+```
+
 ## [1.7.1] - 2026-07-26
 
 Dependency-refresh release. All four underlying libraries are updated to their 2026-07-26 releases, which are
