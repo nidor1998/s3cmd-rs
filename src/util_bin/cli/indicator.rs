@@ -1,6 +1,10 @@
 // Vendored from s3util-rs@1.0.0 (commit 4edffac51939d78b33aae9476ed61be9df1b35c0)
 //   src/bin/s3util/cli/indicator.rs
 // Adjustments: stripped #[cfg(test)] mod tests
+//              Result lines to stderr made best-effort (ported from
+//              s3util-rs 1.9.2 — eprintln! panics on a closed stderr).
+
+use std::io::Write;
 
 use async_channel::Receiver;
 use indicatif::{HumanBytes, ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -132,7 +136,10 @@ pub fn show_indicator(
                     progress_text.finish_and_clear();
 
                     if show_result && total_error_count == 0 {
-                        eprintln!("-> {resolved_target}");
+                        // eprintln! panics when stderr is a closed pipe
+                        // (`s7cmd cp ... 2>&1 | head`); result lines are
+                        // best-effort, like the tracing PipeSafeWriter.
+                        let _ = writeln!(std::io::stderr(), "-> {resolved_target}");
 
                         let mut parts = vec![format!(
                             "Transferred: {} | {}/sec",
@@ -150,7 +157,7 @@ pub fn show_indicator(
                         parts.push(format!("additional checksum verify: {checksum_status}"));
 
                         let result_message = parts.join(", ");
-                        eprintln!("{result_message}");
+                        let _ = writeln!(std::io::stderr(), "{result_message}");
                     }
 
                     return;

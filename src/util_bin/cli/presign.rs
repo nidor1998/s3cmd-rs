@@ -1,6 +1,7 @@
 // Vendored from s3util-rs@1.4.0
 //   src/bin/s3util/cli/presign.rs
 // Adjustments: rewrote crate::cli → super.
+//              Report println made pipe-safe (ported from s3util-rs 1.9.2).
 
 use std::time::Duration;
 
@@ -9,6 +10,8 @@ use anyhow::Result;
 use s3util_rs::config::ClientConfig;
 use s3util_rs::config::args::presign::PresignArgs;
 use s3util_rs::storage::s3::api;
+
+use crate::pipe_safe::println_pipe_safe;
 
 use super::ExitStatus;
 
@@ -32,6 +35,6 @@ pub async fn run_presign(args: PresignArgs, client_config: ClientConfig) -> Resu
         client_config.request_payer.clone(),
     )
     .await?;
-    println!("{url}");
+    println_pipe_safe(&url)?;
     Ok(ExitStatus::Success)
 }

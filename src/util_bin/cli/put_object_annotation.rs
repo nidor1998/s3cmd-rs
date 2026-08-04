@@ -1,6 +1,8 @@
 // Vendored from s3util-rs@1.6.0
 //   src/bin/s3util/cli/put_object_annotation.rs
-// Adjustments: none — the upstream file already targets `super::ExitStatus`.
+// Adjustments: none beyond the note below — the upstream file already
+//              targets `super::ExitStatus`.
+//              Report println made pipe-safe (ported from s3util-rs 1.9.2).
 
 use anyhow::{Context, Result};
 use aws_sdk_s3::primitives::ByteStream;
@@ -11,6 +13,8 @@ use s3util_rs::config::args::put_object_annotation::PutObjectAnnotationArgs;
 use s3util_rs::output::json::put_object_annotation_to_json;
 use s3util_rs::storage::annotation;
 use s3util_rs::storage::s3::api::{self, HeadError, PutObjectAnnotationParams};
+
+use crate::pipe_safe::println_pipe_safe;
 
 use super::ExitStatus;
 
@@ -91,7 +95,7 @@ pub async fn run_put_object_annotation(
         Ok(out) => {
             annotation::verify_crc64nvme(&crc64, out.checksum_crc64_nvme())?;
             let json = put_object_annotation_to_json(&out);
-            println!("{}", serde_json::to_string_pretty(&json)?);
+            println_pipe_safe(&serde_json::to_string_pretty(&json)?)?;
             info!(
                 bucket = %bucket,
                 key = %key,

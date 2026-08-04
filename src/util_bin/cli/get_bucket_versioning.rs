@@ -1,6 +1,7 @@
 // Vendored from s3util-rs@0.2.0
 //   src/bin/s3util/cli/get_bucket_versioning.rs
 // Adjustments: no tests stripped; rewrote crate::cli → super
+//              Report println made pipe-safe (ported from s3util-rs 1.9.2).
 use anyhow::Result;
 use tracing::info;
 
@@ -8,6 +9,8 @@ use s3util_rs::config::ClientConfig;
 use s3util_rs::config::args::get_bucket_versioning::GetBucketVersioningArgs;
 use s3util_rs::output::json::get_bucket_versioning_to_json;
 use s3util_rs::storage::s3::api::{self, HeadError};
+
+use crate::pipe_safe::println_pipe_safe;
 
 use super::ExitStatus;
 
@@ -36,7 +39,7 @@ pub async fn run_get_bucket_versioning(
                 info!(bucket = %bucket, "Bucket versioning not configured.");
             } else {
                 let pretty = serde_json::to_string_pretty(&json)?;
-                println!("{pretty}");
+                println_pipe_safe(&pretty)?;
             }
             Ok(ExitStatus::Success)
         }

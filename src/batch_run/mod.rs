@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::FromArgMatches;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -324,7 +324,14 @@ async fn run_read_all(args: BatchRunArgs) -> i32 {
     };
 
     if !args.no_summary {
-        eprintln!("{}", format_summary(&summary, args.json_tracing));
+        // eprintln! panics when stderr is a closed pipe (`s7cmd batch-run
+        // ... 2>&1 | head`); the summary is best-effort, like the tracing
+        // output, which already ignores a closed stderr.
+        let _ = writeln!(
+            std::io::stderr(),
+            "{}",
+            format_summary(&summary, args.json_tracing)
+        );
     }
 
     code
@@ -412,7 +419,12 @@ async fn run_streaming(args: BatchRunArgs) -> i32 {
     };
 
     if !args.no_summary {
-        eprintln!("{}", format_summary(&summary, args.json_tracing));
+        // Best-effort for the same reason as in `run_read_all`.
+        let _ = writeln!(
+            std::io::stderr(),
+            "{}",
+            format_summary(&summary, args.json_tracing)
+        );
     }
 
     final_code

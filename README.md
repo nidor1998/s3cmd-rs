@@ -812,7 +812,20 @@ replication, transfer acceleration, request payment). For any S3 use
 case outside that scope, use a more comprehensive tool such as the
 [AWS CLI](https://aws.amazon.com/cli/) (`aws s3api`).
 
-s7cmd targets **Amazon S3** as its only supported platform.
+s7cmd targets **Amazon S3** as its only supported platform and is
+optimized for Amazon S3 performance.
+
+> Note that "optimized for Amazon S3 performance" includes the
+> allowed request rate: Amazon S3 supports at least 3,500
+> PUT/COPY/POST/DELETE or 5,500 GET/HEAD requests per second per
+> partitioned prefix, and s7cmd's parallel `ls`, `clean`, and
+> `sync` engines assume that capacity. The request rate allowed by
+> S3-compatible storage may differ significantly, so running `ls`,
+> `clean`, or `sync` against S3-compatible storage can exceed the
+> service's rate limit. The request rate can be capped with each
+> command's rate-limit option (`--rate-limit-api` for `ls`,
+> `--rate-limit-objects` for `clean` and `sync`).
+
 S3-compatible storage (MinIO, Cloudflare R2, Backblaze B2, Wasabi,
 Ceph RGW, DigitalOcean Spaces, IBM COS, and similar) is provided
 strictly **as-is**, with **absolutely no support or assistance** —
@@ -825,8 +838,14 @@ generated from AWS service models and assumes Amazon S3 semantics
 (checksum headers, endpoint resolution, signing variants, response
 schemas); features that depend on AWS-specific semantics, such as
 CRC64NVME checksums or newer S3 API additions, may not work against
-non-AWS endpoints. Bug reports, questions, and assistance requests
-regarding S3-compatible storage will not be addressed.
+non-AWS endpoints. In practice, most s7cmd subcommands are not
+supported on S3-compatible storage and are therefore unlikely to
+work: the bucket-configuration family drives management APIs that
+such services implement partially or not at all, and `rename`,
+`restore-object`, and the object-annotation subcommands depend on
+Amazon-S3-only APIs and checksum semantics. Bug reports, questions,
+and assistance requests regarding S3-compatible storage will not be
+addressed.
 
 s7cmd is **not** intended to be a drop-in replacement for, or
 behaviorally compatible with, any other S3 client — including the
