@@ -407,6 +407,15 @@ pub async fn run_parallel(
                     break;
                 }
                 let permit = sem.clone().acquire_owned().await.expect("sem closed");
+                // Re-check after the await: a SIGINT that landed while this
+                // loop was parked on the semaphore must not dispatch one more
+                // line — that line's freshly installed Ctrl+C handler would
+                // never see the already-delivered signal, so it would run to
+                // full completion yet read the process-global interruption
+                // state stored by a sibling line and misreport as skipped.
+                if interrupt.load(Ordering::SeqCst) {
+                    break;
+                }
                 let dispatch = Arc::clone(&dispatch);
                 let progress = Arc::clone(&progress);
                 let fail_cancel = Arc::clone(&fail_cancel);
@@ -554,6 +563,18 @@ pub async fn run_parallel_streaming(
                 };
 
                 let permit = sem.clone().acquire_owned().await.expect("sem closed");
+                // Re-check after the awaits: a SIGINT that landed while this
+                // loop was parked on `rx.recv()` or the semaphore must not
+                // dispatch one more line — that line's freshly installed
+                // Ctrl+C handler would never see the already-delivered
+                // signal, so it would run to full completion yet read the
+                // process-global interruption state stored by a sibling line
+                // and misreport as skipped. The line pulled above never
+                // spawns; count it skipped like the post-loop drain does.
+                if interrupt.load(Ordering::SeqCst) {
+                    summary.skipped += 1;
+                    break;
+                }
                 let dispatch = Arc::clone(&dispatch);
                 let progress = Arc::clone(&progress);
                 let fail_cancel = Arc::clone(&fail_cancel);
