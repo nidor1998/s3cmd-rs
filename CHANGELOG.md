@@ -8,13 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.8.0] - 2026-08-07
 
 Bug-fix release, taken as a minor version because the fix changes an observable exit code. No library pins move;
-the fix lands in s7cmd's vendored command frontends.
+the fix lands in s7cmd's vendored command frontends. Pre-built binaries for Windows on ARM return with this
+release (see **Added**).
 
 **Upgrade notes:**
 
 - [Breaking change] `sync`, `ls`, and `clean` runs interrupted by Ctrl+C (SIGINT) now exit with code `130` instead
   of `0`. Scripts and automation that test the exit status should treat `130` as user interruption rather than
   success.
+
+### Added
+
+- Pre-built binaries for Windows on ARM (`aarch64-pc-windows-msvc`). The `windows-11-arm` runner is restored to CI
+  (build and test) and to the release workflow, which now publishes a `windows-aarch64` artifact alongside the
+  existing platforms. The runner had been dropped in 0.1.1 while the `LNK1322` (Cortex-A53 erratum #843419) build
+  failure was unresolved; that failure no longer occurs.
 
 ### Fixed
 
