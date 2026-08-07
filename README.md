@@ -444,6 +444,23 @@ library. For details on flags, semantics, and exit codes, refer to:
 Each of these projects (except `batch-run`) also ships its own
 standalone binary, which can be used independently of s7cmd.
 
+**Exit code on interruption (v1.8.0+).** Every subcommand that catches
+Ctrl-C (SIGINT) for graceful shutdown — `sync`, `ls`, `clean`, `cp`,
+and `mv` — exits with code `130` (128 + SIGINT, the conventional shell
+encoding for termination by signal) when interrupted, and the
+interruption takes precedence over any errors or warnings the aborted
+run had recorded. This is one place s7cmd can differ from the upstream
+documentation linked above: the vendored frontends carry this fix
+ahead of the pinned s3rm-rs / s3ls-rs versions and apply the same
+behavior to `sync`, whose standalone upstream binary currently exits
+`0` on interruption. Subcommands that finish in a single API call
+install no handler, so Ctrl-C terminates them through the default
+signal disposition — which shells also report as `130`. At `clean`'s
+confirmation prompt, Ctrl-C likewise terminates immediately via the
+default handler. Inside `batch-run`, an interrupted line is bucketed
+`skipped (exit 130)` and the batch exit code follows the severity
+ranking described in the `batch-run` section above.
+
 ## Security assumptions
 
 s7cmd is built on a fundamental security assumption: **both the object storage system and the specific bucket you

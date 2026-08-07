@@ -18,6 +18,40 @@ mod util_bin;
 
 use cli::{Cli, Cmd, cli_command};
 
+/// Serializes every unit test that delivers SIGINT to the test process or
+/// asserts on a Ctrl+C-received flag.
+///
+/// The four vendored `ctrl_c_handler` test modules (sync_bin, ls_bin,
+/// clean_bin, util_bin) all run inside one test binary, and a SIGINT sent
+/// to the process by one module's test is broadcast to every live tokio
+/// signal listener. A per-module semaphore cannot prevent one module's
+/// SIGINT from tripping another module's in-flight handler, which would
+/// make the `CTRL_C_RECEIVED`-flag assertions flaky — so all of them
+/// share this single process-wide lock instead.
+///
+/// The lock only serializes the tests that hold it. Tests that drive the
+/// full run() paths (sync_bin / ls_bin / clean_bin `run()`, `dispatch`)
+/// spawn ctrl-c handlers without holding it, and a lock holder's SIGINT
+/// is broadcast to those handlers too — each stores its module's
+/// `CTRL_C_RECEIVED` flag whenever its own runtime next polls it, which
+/// can be long after the lock has moved on to another test. Flag tests
+/// therefore assert only the true-direction after their own SIGINT, and
+/// establish "not set" via retries; see `reset_ctrl_c_received` in the
+/// ctrl_c_handler test modules.
+#[cfg(test)]
+pub(crate) mod signal_test_lock {
+    use std::sync::{Arc, OnceLock};
+
+    use tokio::sync::Semaphore;
+
+    pub(crate) fn semaphore() -> Arc<Semaphore> {
+        static SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+        SEMAPHORE
+            .get_or_init(|| Arc::new(Semaphore::new(1)))
+            .clone()
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli_args = match Cli::from_arg_matches(&cli_command().get_matches()) {

@@ -13,6 +13,11 @@
 //              from batch-run without killing the process mid-batch).
 //              "Deletion cancelled." made EPIPE-safe (a bare eprintln!
 //              panics when stderr is a closed pipe).
+//              SIGINT exit code 130 ported from s3rm-rs@1.6.0
+//              (nidor1998/s3rm-rs#100): after the pipeline stops, a run
+//              interrupted by Ctrl+C returns 130 instead of falling
+//              through to the success/error mapping — returned rather
+//              than upstream's std::process::exit so batch-run survives.
 
 use std::io::Write;
 
@@ -32,6 +37,10 @@ pub mod ui_config;
 pub const EXIT_CODE_SUCCESS: i32 = 0;
 pub const EXIT_CODE_WARNING: i32 = 3;
 pub const EXIT_CODE_ABNORMAL_TERMINATION: i32 = 101;
+/// Conventional exit code for termination by Ctrl+C: 128 + SIGINT(2), the
+/// shell encoding that lets scripts distinguish user interruption from
+/// real failures.
+const SIGINT_EXIT_CODE: i32 = 130;
 
 pub fn start_tracing_if_necessary(config: &Config) -> bool {
     if let Some(tracing_config) = config.tracing_config.as_ref() {
@@ -94,6 +103,16 @@ pub async fn run(config: Config) -> Result<i32> {
         }
 
         let duration_sec = format!("{:.3}", start_time.elapsed().as_secs_f32());
+
+        // Ctrl+C takes precedence over whatever the pipeline recorded: once
+        // SIGINT is received the run is "interrupted", even if the forced
+        // shutdown also surfaced errors or warnings. Returned (not
+        // process::exit as upstream does) so batch-run survives and buckets
+        // the line as skipped.
+        if ctrl_c_handler::is_ctrl_c_received() {
+            debug!(duration_sec = duration_sec, "deletion cancelled by user.");
+            return Ok(SIGINT_EXIT_CODE);
+        }
 
         if pipeline.has_error() {
             if pipeline.has_panic() {
@@ -162,6 +181,20 @@ mod tests {
         ]);
         assert!(config.tracing_config.is_none());
         assert!(!start_tracing_if_necessary(&config));
+    }
+
+    #[test]
+    fn sigint_exit_code_is_130() {
+        assert_eq!(SIGINT_EXIT_CODE, 130);
+    }
+
+    #[test]
+    #[cfg(target_family = "unix")]
+    fn sigint_exit_code_follows_128_plus_signal_number_convention() {
+        assert_eq!(
+            SIGINT_EXIT_CODE,
+            128 + nix::sys::signal::Signal::SIGINT as i32
+        );
     }
 
     // NOTE: a "no --force, non-TTY → SafetyChecker errors out" test would be

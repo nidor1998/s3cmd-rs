@@ -10,6 +10,11 @@
 //              on Err instead. run() now returns Result<i32> instead of
 //              calling std::process::exit (so it can be invoked from
 //              batch-run without killing the process mid-batch).
+//              SIGINT exit code 130 ported from nidor1998/s3ls-rs#34:
+//              after the pipeline stops, a run interrupted by Ctrl+C
+//              returns 130 instead of falling through to the
+//              success/error mapping — returned rather than upstream's
+//              std::process::exit so batch-run survives.
 
 use anyhow::Result;
 use tracing::{debug, error};
@@ -22,6 +27,11 @@ use s3ls_rs::{
 
 mod ctrl_c_handler;
 mod tracing_init;
+
+/// Conventional exit code for termination by Ctrl+C: 128 + SIGINT(2), the
+/// shell encoding that lets scripts distinguish user interruption from
+/// real failures.
+const SIGINT_EXIT_CODE: i32 = 130;
 
 pub fn start_tracing_if_necessary(config: &Config) -> bool {
     if let Some(tracing_config) = config.tracing_config.as_ref() {
@@ -58,7 +68,19 @@ pub async fn run(config: Config) -> Result<i32> {
 
     let pipeline = ListingPipeline::new(config, cancellation_token);
 
-    match pipeline.run().await {
+    let result = pipeline.run().await;
+
+    // Ctrl+C takes precedence over whatever the pipeline returned: once
+    // SIGINT is received the run is "interrupted", even if the shutdown
+    // also surfaced an error. Returned (not process::exit as upstream
+    // does) so batch-run survives and buckets the line as skipped.
+    if ctrl_c_handler::is_ctrl_c_received() {
+        let duration_sec = format!("{:.3}", start_time.elapsed().as_secs_f32());
+        debug!(duration_sec = duration_sec, "listing cancelled by user.");
+        return Ok(SIGINT_EXIT_CODE);
+    }
+
+    match result {
         Ok(()) => {
             let duration_sec = format!("{:.3}", start_time.elapsed().as_secs_f32());
             debug!(duration_sec = duration_sec, "s7cmd ls has been completed.");
@@ -105,6 +127,20 @@ mod tests {
         let config = build_config(&["s3ls", "-qqq", "--target-profile", "p", "s3://test-bucket"]);
         assert!(config.tracing_config.is_none());
         assert!(!start_tracing_if_necessary(&config));
+    }
+
+    #[test]
+    fn sigint_exit_code_is_130() {
+        assert_eq!(SIGINT_EXIT_CODE, 130);
+    }
+
+    #[test]
+    #[cfg(target_family = "unix")]
+    fn sigint_exit_code_follows_128_plus_signal_number_convention() {
+        assert_eq!(
+            SIGINT_EXIT_CODE,
+            128 + nix::sys::signal::Signal::SIGINT as i32
+        );
     }
 
     /// Bucket-listing mode (no target prefix) against an unreachable endpoint.

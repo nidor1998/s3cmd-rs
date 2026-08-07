@@ -1,6 +1,10 @@
 // Vendored from s3util-rs@0.2.0
 //   src/bin/s3util/cli/ctrl_c_handler.rs
-// Adjustments: stripped #[cfg(test)] mod tests
+// Adjustments: stripped #[cfg(test)] mod tests;
+//              tests serialize through the process-wide
+//              crate::signal_test_lock instead of a per-module semaphore
+//              (s7cmd has four ctrl_c_handler test modules in one test
+//              binary, and a SIGINT sent by one is broadcast to all).
 
 use tokio::task::JoinHandle;
 use tokio::{select, signal};
@@ -31,19 +35,10 @@ pub fn spawn_ctrl_c_handler(cancellation_token: PipelineCancellationToken) -> Jo
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, OnceLock};
-
+    use crate::signal_test_lock::semaphore;
     use s3util_rs::types::token::create_pipeline_cancellation_token;
-    use tokio::sync::Semaphore;
 
     use super::*;
-
-    fn semaphore() -> Arc<Semaphore> {
-        static SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
-        SEMAPHORE
-            .get_or_init(|| Arc::new(Semaphore::new(1)))
-            .clone()
-    }
 
     #[tokio::test]
     async fn ctrl_c_handler_handles_cancellation_token() {

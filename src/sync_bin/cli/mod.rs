@@ -6,6 +6,11 @@
 //              batch-run without killing the process mid-batch);
 //              show_sync_report_summary() carries the annotation_matches /
 //              annotation_mismatch fields added in s3sync 1.59.0.
+//              SIGINT exit code 130 added: after the pipeline stops, a
+//              run interrupted by Ctrl+C returns 130 instead of falling
+//              through to the success/error mapping — an s7cmd addition
+//              (not in upstream s3sync as of 1.61.2), same pattern as
+//              nidor1998/s3rm-rs#100 / nidor1998/s3ls-rs#34.
 
 use anyhow::{Result, anyhow};
 use s3sync::Config;
@@ -26,6 +31,10 @@ const EXIT_CODE_ERROR: i32 = 1;
 #[allow(dead_code)]
 const EXIT_CODE_INVALID_ARGS: i32 = 2;
 const EXIT_CODE_WARNING: i32 = 3;
+/// Conventional exit code for termination by Ctrl+C: 128 + SIGINT(2), the
+/// shell encoding that lets scripts distinguish user interruption from
+/// real failures.
+const SIGINT_EXIT_CODE: i32 = 130;
 
 pub async fn run(config: Config) -> Result<i32> {
     #[allow(unused_assignments)]
@@ -61,6 +70,17 @@ pub async fn run(config: Config) -> Result<i32> {
         indicator_join_handle.await?;
 
         let duration_sec = format!("{:.3}", start_time.elapsed().as_secs_f32());
+
+        // Ctrl+C takes precedence over whatever the pipeline recorded: once
+        // SIGINT is received the run is "interrupted", even if the forced
+        // shutdown also surfaced errors or warnings. Returned (not
+        // process::exit) so batch-run survives and buckets the line as
+        // skipped.
+        if ctrl_c_handler::is_ctrl_c_received() {
+            debug!(duration_sec = duration_sec, "sync cancelled by user.");
+            return Ok(SIGINT_EXIT_CODE);
+        }
+
         if pipeline.has_error() {
             error!(duration_sec = duration_sec, "s7cmd sync failed.");
 
@@ -137,6 +157,20 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn sigint_exit_code_is_130() {
+        assert_eq!(SIGINT_EXIT_CODE, 130);
+    }
+
+    #[test]
+    #[cfg(target_family = "unix")]
+    fn sigint_exit_code_follows_128_plus_signal_number_convention() {
+        assert_eq!(
+            SIGINT_EXIT_CODE,
+            128 + nix::sys::signal::Signal::SIGINT as i32
+        );
     }
 
     #[test]

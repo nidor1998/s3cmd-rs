@@ -97,17 +97,14 @@ async fn run_with_sigint(cmd: &mut std::process::Command) -> Option<i32> {
 // ---- sync ----
 
 #[tokio::test]
-async fn cancel_sync_sigint_does_not_hang() {
+async fn cancel_sync_sigint_exits_130() {
     let _serial = SIGINT_TEST_LOCK.lock().await;
-    // sync's exit-on-SIGINT is non-deterministic: src/sync_bin/cli/mod.rs has
-    // no explicit "cancelled → exit 130" path. Depending on what the pipeline
-    // had done by the time SIGINT lands, the process can exit 0 (clean
-    // cancellation, nothing pending), 3 (warning — partial completion), or
-    // 1 (error). The strict exit-130 assertion that fits cp/mv (which DO
-    // have an explicit ExitStatus::Cancelled path in util_bin) does not
-    // apply to sync. Per the spec's section-7 fallback, we assert only that
-    // the process exits — `run_with_sigint` already enforces a 30s timeout,
-    // so reaching this line proves SIGINT was honored.
+    // src/sync_bin/cli/mod.rs checks `is_ctrl_c_received()` once the
+    // pipeline stops and returns SIGINT_EXIT_CODE (130) regardless of what
+    // the forced shutdown recorded (Ctrl+C takes precedence over errors and
+    // warnings), so the exit code is deterministic: the throttled 30 MiB
+    // transfer guarantees SIGINT lands mid-run, and `run_with_sigint`
+    // retries any attempt where the signal beat the handler installation.
     let helper = TestHelper::new().await;
     let bucket = generate_bucket_name();
     helper.create_bucket(&bucket, REGION).await;
@@ -130,7 +127,8 @@ async fn cancel_sync_sigint_does_not_hang() {
         local_dir.to_str().unwrap(),
     ]);
 
-    let _code = run_with_sigint(&mut cmd).await;
+    let code = run_with_sigint(&mut cmd).await;
+    assert_eq!(code, Some(130), "sync SIGINT must exit 130; got {code:?}");
 
     helper.delete_bucket_with_cascade(&bucket).await;
     let _ = std::fs::remove_dir_all(&local_dir);
@@ -148,9 +146,11 @@ async fn cancel_ls_sigint_does_not_hang() {
     // dispatch-only test, so we fall back to the spec-authorized soft
     // assertion: confirm the process exits (i.e. doesn't hang) and that
     // SIGINT was honored — exact exit code is not required because, on a
-    // very fast listing, the process may complete normally before SIGINT
-    // lands. The richer "must exit 130" assertion is covered by sync, cp,
-    // mv, and clean (which all have per-byte/per-object throttles).
+    // very fast listing, the process may complete normally (exit 0) before
+    // SIGINT lands, while an interrupted run exits 130. The strict
+    // "must exit 130" assertion is covered by
+    // cancel_ls_sigint_mid_paginated_listing_exits_130 below (and by sync,
+    // cp, mv, and clean, which all have per-byte/per-object throttles).
     //
     // `--rate-limit-api` must be >= 10 (its clap range is 10..=u32::MAX);
     // a lower value makes the run die at exit 2 before any S3 call, which
@@ -202,10 +202,11 @@ async fn cancel_clean_sigint_does_not_hang() {
     // throttle is 10/sec with --batch-size 10. With 200 seeded objects the
     // theoretical duration is ~20s, but the leaky-bucket token allowance
     // and concurrent batch deletion mean the first delete can drain the
-    // bucket fast enough that exit 0 races SIGINT — observed in practice.
-    // Per the spec's section-7 fallback, soften to "process exits, doesn't
-    // hang." Strict exit-130 coverage stays in cp/mv (per-byte bandwidth
-    // throttle on a 30 MiB transfer is reliable).
+    // bucket fast enough that exit 0 (normal completion) races SIGINT
+    // (exit 130) — observed in practice. Per the spec's section-7 fallback,
+    // soften to "process exits, doesn't hang." Strict exit-130 coverage
+    // lives in cancel_clean_sigint_mid_deletion_exits_130 below and in
+    // cp/mv (per-byte bandwidth throttle on a 30 MiB transfer is reliable).
     let helper = TestHelper::new().await;
     let bucket = generate_bucket_name();
     helper.create_bucket(&bucket, REGION).await;
@@ -316,8 +317,8 @@ async fn cancel_mv_sigint_exits_130() {
 //
 // The two tests below differ from the "does_not_hang" family above: they
 // shape the workload so SIGINT reliably lands while the operation is still
-// in flight, driving the explicit cancellation returns (ls_bin's
-// "listing cancelled" → 0 and clean_bin's "deletion cancelled" → 0).
+// in flight, driving the explicit cancellation returns (ls_bin's and
+// clean_bin's `is_ctrl_c_received()` → SIGINT_EXIT_CODE, i.e. exit 130).
 //
 // NOTE on flag values: `--rate-limit-api` has a hard floor of 10
 // (`10..=u32::MAX`). A smaller value is a clap error (exit 2) that kills
@@ -329,9 +330,9 @@ async fn cancel_mv_sigint_exits_130() {
 /// ListObjectsV2 calls; `--rate-limit-api 10` (the floor) spaces them
 /// ~10/sec for roughly 15s of listing — comfortably longer than the largest
 /// startup delay in `STARTUP_DELAYS_MS`, so SIGINT always lands mid-listing
-/// and the cancellation branch (exit 0) is taken.
+/// and the cancellation branch (exit 130) is taken.
 #[tokio::test]
-async fn cancel_ls_sigint_mid_paginated_listing_exits_0() {
+async fn cancel_ls_sigint_mid_paginated_listing_exits_130() {
     let _serial = SIGINT_TEST_LOCK.lock().await;
     let helper = TestHelper::new().await;
     let bucket = generate_bucket_name();
@@ -361,8 +362,8 @@ async fn cancel_ls_sigint_mid_paginated_listing_exits_0() {
     let code = run_with_sigint(&mut cmd).await;
     assert_eq!(
         code,
-        Some(0),
-        "cancelled listing must exit 0 (ls cancellation path)"
+        Some(130),
+        "cancelled listing must exit 130 (ls cancellation path)"
     );
 
     helper.delete_bucket_with_cascade(&bucket).await;
@@ -370,12 +371,13 @@ async fn cancel_ls_sigint_mid_paginated_listing_exits_0() {
 
 /// clean over 200 objects with `--batch-size 10 --rate-limit-objects 10`
 /// keeps the deletion pipeline busy for ~20s of theoretical work, so SIGINT
-/// lands mid-run at any delay in `STARTUP_DELAYS_MS` and drives the post-run
-/// "deletion cancelled" branch (exit 0). If the leaky-bucket burst finishes
-/// the bucket first, the run still exits 0 — the assertion is stable either
-/// way; only the covered branch differs.
+/// lands mid-run at any delay in `STARTUP_DELAYS_MS` (at most 9s) and
+/// drives the post-run "deletion cancelled by user" branch (exit 130). A
+/// leaky-bucket burst that drained the bucket before the signal would
+/// surface as exit 0 here — that would mean the throttle window shrank and
+/// the workload needs re-tuning, not that the cancellation path regressed.
 #[tokio::test]
-async fn cancel_clean_sigint_mid_deletion_exits_0() {
+async fn cancel_clean_sigint_mid_deletion_exits_130() {
     let _serial = SIGINT_TEST_LOCK.lock().await;
     let helper = TestHelper::new().await;
     let bucket = generate_bucket_name();
@@ -405,8 +407,8 @@ async fn cancel_clean_sigint_mid_deletion_exits_0() {
     let code = run_with_sigint(&mut cmd).await;
     assert_eq!(
         code,
-        Some(0),
-        "cancelled deletion must exit 0 (clean cancellation path)"
+        Some(130),
+        "cancelled deletion must exit 130 (clean cancellation path)"
     );
 
     helper.delete_bucket_with_cascade(&bucket).await;
