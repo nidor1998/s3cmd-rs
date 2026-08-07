@@ -49,17 +49,24 @@ const STALLED_OBJECT_SIZE: usize = 1024 * 1024;
 const STALLED_OBJECT_PREFIX: usize = 1024;
 
 /// Handle to a fake S3 endpoint running on a background thread.
+///
+/// The fields below marked `cfg_attr(..., allow(dead_code))` are read only
+/// by the unix-gated SIGINT tests; without the attribute they warn as
+/// never-read on Windows, where only the no-SIGINT control tests run.
 struct FakeS3 {
     endpoint: String,
     pages_served: Arc<AtomicUsize>,
+    #[cfg_attr(not(target_family = "unix"), allow(dead_code))]
     object_gets_served: Arc<AtomicUsize>,
     deletes_served: Arc<AtomicUsize>,
     deleted_keys: Arc<Mutex<Vec<String>>>,
+    #[cfg_attr(not(target_family = "unix"), allow(dead_code))]
     annotation_pages_served: Arc<AtomicUsize>,
     /// While false, `ListObjectAnnotations` responses carry a continuation
     /// token (endless listing); set to true to make the next response the
     /// final page. The annotation listing loop is deliberately
     /// non-cancellable in the library, so tests end it from the outside.
+    #[cfg_attr(not(target_family = "unix"), allow(dead_code))]
     finish_annotations: Arc<AtomicBool>,
 }
 
@@ -86,6 +93,10 @@ fn spawn_fake_s3(total_pages: Option<usize>) -> FakeS3 {
 /// the connection open — so the child is provably blocked mid-download
 /// when the test sends SIGINT, and the forced shutdown that follows
 /// surfaces whatever error the aborted body read produces.
+///
+/// Called only by the unix-gated SIGINT tests, hence the Windows
+/// dead-code allowance.
+#[cfg_attr(not(target_family = "unix"), allow(dead_code))]
 fn spawn_fake_s3_stalled_objects() -> FakeS3 {
     spawn_fake_s3_impl(None, true)
 }
