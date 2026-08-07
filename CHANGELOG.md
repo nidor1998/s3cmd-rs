@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-08-07
+
+Bug-fix release, taken as a minor version because the fix changes an observable exit code. No library pins move;
+the fix lands in s7cmd's vendored command frontends.
+
+**Upgrade notes:**
+
+- [Breaking change] `sync`, `ls`, and `clean` runs interrupted by Ctrl+C (SIGINT) now exit with code `130` instead
+  of `0`. Scripts and automation that test the exit status should treat `130` as user interruption rather than
+  success.
+
+### Fixed
+
+#### sync / ls / clean
+
+- [Breaking change] A run interrupted by Ctrl+C (SIGINT) now exits with code 130 (128 + SIGINT, the conventional
+  shell encoding for termination by signal) instead of 0. Previously an interrupted run was indistinguishable from
+  a successful one by its exit code, and the interruption exit code was inconsistent across subcommands (`cp` and
+  `mv` already exited 130). The Ctrl+C handler records the signal in a process-global flag before cancelling the
+  pipeline, and the frontend checks it once the pipeline has stopped — the interruption takes precedence over
+  whatever the forced shutdown recorded, so in particular a Ctrl+C'd `clean` that had already collected genuine
+  deletion errors no longer exits 0. Uninterrupted runs are unchanged, and so is `clean`'s confirmation prompt,
+  where Ctrl+C still terminates the process immediately through the default OS handler. 
+
+#### batch-run
+
+- A Ctrl+C'd `sync`, `ls`, or `clean` line inside a batch is now bucketed `skipped (exit 130)` — matching `cp` and
+  `mv` — where it was previously bucketed `succeeded`. The engines return the interruption code instead of exiting
+  the process, so batch-run itself keeps running exactly as before; the batch exit code follows the existing
+  severity ranking, under which an interrupted batch with no other failures exits 130.
+
+### Underlying libraries
+
+```toml
+s3sync = "=1.61.2"
+s3util-rs = "=1.9.2"
+s3rm-rs = "=1.5.2"
+s3ls-rs = "=1.2.2"
+```
+
 ## [1.7.2] - 2026-08-04
 
 Bug-fix release. Writing to a pipe whose reader has already exited crashed s7cmd on several output paths — piping to
