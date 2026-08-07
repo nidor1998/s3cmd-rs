@@ -5,10 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.8.0] - 2026-08-07
+## [1.8.0] - 2026-08-08
 
-Bug-fix release, taken as a minor version because the fix changes an observable exit code. No library pins move;
-the fix lands in s7cmd's vendored command frontends. Pre-built binaries for Windows on ARM return with this
+Bug-fix release, taken as a minor version because the fix changes an observable exit code. All four underlying
+libraries shipped the same SIGINT exit-code fix upstream, and their pins move to those releases (see **Changed**);
+the fix also lands in s7cmd's vendored command frontends. Pre-built binaries for Windows on ARM return with this
 release (see **Added**).
 
 **Upgrade notes:**
@@ -37,6 +38,15 @@ release (see **Added**).
   deletion errors no longer exits 0. Uninterrupted runs are unchanged, and so is `clean`'s confirmation prompt,
   where Ctrl+C still terminates the process immediately through the default OS handler. 
 
+#### cp / mv
+
+- A `cp`/`mv` interrupted by Ctrl+C (SIGINT) now always exits with code 130. Most interrupted runs already did,
+  but when the forced shutdown itself surfaced a non-cancellation error — for example a body read that failed
+  only after the signal arrived — the run was misreported as a transfer failure (`copy failed.`, exit 1). Ctrl+C
+  now takes precedence over any error produced by the shutdown it triggered (ported from s3util-rs 1.10.0).
+  Uninterrupted runs are unaffected, a worker failure that cancels the pipeline without a SIGINT is still
+  reported as a failure (exit 1), and an interrupted `mv` still never deletes the source object.
+
 #### batch-run
 
 - A Ctrl+C'd `sync`, `ls`, or `clean` line inside a batch is now bucketed `skipped (exit 130)` — matching `cp` and
@@ -44,13 +54,25 @@ release (see **Added**).
   the process, so batch-run itself keeps running exactly as before; the batch exit code follows the existing
   severity ranking, under which an interrupted batch with no other failures exits 130.
 
+### Changed
+
+- s3sync `v1.61.2 -> v1.62.0`
+- s3util-rs `v1.9.2 -> v1.10.0`
+- s3rm-rs `v1.5.2 -> v1.6.0`
+- s3ls-rs `v1.2.2 -> v1.3.0`
+
+These are the upstream releases of the same SIGINT exit-code fix: s3rm-rs 1.6.0 and s3ls-rs 1.3.0 ship the fix
+the vendored frontends port, s3sync 1.62.0 adopts the same fix for its standalone binary (it landed in s7cmd
+first), and the s3util-rs 1.10.0 `cp`/`mv` interruption-precedence fix is ported into the vendored frontend
+here.
+
 ### Underlying libraries
 
 ```toml
-s3sync = "=1.61.2"
-s3util-rs = "=1.9.2"
-s3rm-rs = "=1.5.2"
-s3ls-rs = "=1.2.2"
+s3sync = "=1.62.0"
+s3util-rs = "=1.10.0"
+s3rm-rs = "=1.6.0"
+s3ls-rs = "=1.3.0"
 ```
 
 ## [1.7.2] - 2026-08-04

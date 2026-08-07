@@ -1,21 +1,27 @@
 //! Process-level regression tests for SIGINT (Ctrl+C) exit-code handling
-//! in the pipeline subcommands (`ls`, `clean`, `sync`) and in `batch-run`.
+//! in the pipeline subcommands (`ls`, `clean`, `sync`, `cp`, `mv`) and in
+//! `batch-run`.
 //!
 //! Each of these subcommands catches Ctrl+C, cancels its pipeline, and must
 //! then exit gracefully with code 130 (128 + SIGINT), the conventional shell
-//! encoding for a run interrupted by the user — matching what `cp`/`mv`
-//! already do via `ExitStatus::Cancelled`. These tests run the real binary
-//! against a minimal in-process S3 endpoint (no AWS access needed): the
-//! endpoint keeps returning truncated list pages so the run stays busy until
-//! the test sends SIGINT, and answers object `GET` (for `sync` downloads),
-//! batch `DeleteObjects`, and single-object `DeleteObject` requests so the
-//! later pipeline stages stay active as well.
+//! encoding for a run interrupted by the user. These tests run the real
+//! binary against a minimal in-process S3 endpoint (no AWS access needed):
+//! the endpoint keeps returning truncated list pages so the run stays busy
+//! until the test sends SIGINT, and answers object `GET` (for `sync`
+//! downloads), batch `DeleteObjects`, and single-object `DeleteObject`
+//! requests so the later pipeline stages stay active as well. For `cp`/`mv`
+//! the endpoint instead serves an object whose body stalls after a small
+//! prefix, so the interrupt arrives while the transfer is blocked
+//! mid-download.
 //!
 //! Covers the `is_ctrl_c_received()` → `SIGINT_EXIT_CODE` paths in
 //! `src/ls_bin/mod.rs`, `src/clean_bin/mod.rs`, and
-//! `src/sync_bin/cli/mod.rs` (ported from nidor1998/s3rm-rs#100 /
-//! nidor1998/s3ls-rs#34), plus batch-run's severity-ranked aggregation of a
-//! line that returns 130.
+//! `src/sync_bin/cli/mod.rs` (ported from s3rm-rs 1.6.0 / s3ls-rs 1.3.0;
+//! upstream s3sync adopted the same fix in 1.62.0), the
+//! `is_ctrl_c_received()`-over-shutdown-error precedence in
+//! `src/util_bin/cli/mod.rs::run_copy_phase` (ported from s3util-rs
+//! 1.10.0), plus batch-run's severity-ranked aggregation of a line that
+//! returns 130.
 
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
@@ -32,6 +38,15 @@ const BUCKET: &str = "fake-sigint-bucket";
 /// without complaint.
 const OBJECT_BODY: &str = "x";
 const OBJECT_ETAG: &str = "\"9dd4e461268c8034f5c8564e155c67a6\"";
+
+/// Size advertised for the stalled object (see
+/// [`spawn_fake_s3_stalled_objects`]): large enough that the child is
+/// guaranteed to still be reading the body when SIGINT arrives, small
+/// enough to stay below any multipart-download threshold so the transfer
+/// is a single `GET`.
+const STALLED_OBJECT_SIZE: usize = 1024 * 1024;
+/// Body bytes actually written before the response stalls.
+const STALLED_OBJECT_PREFIX: usize = 1024;
 
 /// Handle to a fake S3 endpoint running on a background thread.
 struct FakeS3 {
@@ -56,6 +71,20 @@ struct FakeS3 {
 ///   back as `<Deleted>`
 /// - `DELETE` (single `DeleteObject`) → 204 No Content
 fn spawn_fake_s3(total_pages: Option<usize>) -> FakeS3 {
+    spawn_fake_s3_impl(total_pages, false)
+}
+
+/// [`spawn_fake_s3`] variant for the `cp`/`mv` SIGINT tests: object `HEAD`
+/// advertises a [`STALLED_OBJECT_SIZE`]-byte object, and object `GET`
+/// writes only a [`STALLED_OBJECT_PREFIX`]-byte body prefix and then holds
+/// the connection open — so the child is provably blocked mid-download
+/// when the test sends SIGINT, and the forced shutdown that follows
+/// surfaces whatever error the aborted body read produces.
+fn spawn_fake_s3_stalled_objects() -> FakeS3 {
+    spawn_fake_s3_impl(None, true)
+}
+
+fn spawn_fake_s3_impl(total_pages: Option<usize>, stall_object_bodies: bool) -> FakeS3 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind fake S3 listener");
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let pages_served = Arc::new(AtomicUsize::new(0));
@@ -74,6 +103,19 @@ fn spawn_fake_s3(total_pages: Option<usize>) -> FakeS3 {
             let Some((request_line, request_body)) = read_request(&mut stream) else {
                 continue;
             };
+
+            if stall_object_bodies && is_object_request(&request_line) {
+                let head_only = request_line.starts_with("HEAD");
+                if !head_only {
+                    gets.fetch_add(1, Ordering::SeqCst);
+                }
+                let _ = stream.write_all(&stalled_object_response(head_only));
+                let _ = stream.flush();
+                if !head_only {
+                    hold_until_peer_closes(&mut stream);
+                }
+                continue;
+            }
 
             let response = route_request(
                 &request_line,
@@ -95,6 +137,46 @@ fn spawn_fake_s3(total_pages: Option<usize>) -> FakeS3 {
         object_gets_served,
         deletes_served,
         deleted_keys,
+    }
+}
+
+/// Whether the request is an object `GET`/`HEAD` (as opposed to a bucket
+/// subresource query like `?versioning` or a `?list-type=2` listing).
+fn is_object_request(request_line: &str) -> bool {
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("");
+    (method == "GET" || method == "HEAD")
+        && !has_query_param(target, "versioning")
+        && !has_query_param(target, "list-type")
+}
+
+/// Response for the stalled object: full headers advertising
+/// [`STALLED_OBJECT_SIZE`] bytes, but (for `GET`) only a
+/// [`STALLED_OBJECT_PREFIX`]-byte body prefix — the caller then keeps the
+/// connection open so the client blocks waiting for the rest.
+fn stalled_object_response(head_only: bool) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {STALLED_OBJECT_SIZE}\r\netag: \"fakestalledobjectetag\"\r\nlast-modified: Thu, 01 Jan 2026 00:00:00 GMT\r\naccept-ranges: bytes\r\nconnection: close\r\n\r\n",
+    )
+    .into_bytes();
+    if !head_only {
+        response.extend(std::iter::repeat_n(b'x', STALLED_OBJECT_PREFIX));
+    }
+    response
+}
+
+/// Hold the connection open without sending further body bytes until the
+/// peer closes it (the child exited) or the socket read times out. Blocks
+/// the accept loop, which is fine: the stalled `GET` is the last request a
+/// `cp`/`mv` run issues before it is interrupted.
+fn hold_until_peer_closes(stream: &mut TcpStream) {
+    let mut discard = [0u8; 512];
+    loop {
+        match stream.read(&mut discard) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
     }
 }
 
@@ -569,6 +651,56 @@ fn sigint_during_sync_download_exits_130() {
     let _ = std::fs::remove_dir_all(&local_dir);
 }
 
+// ---- cp / mv ----
+
+/// Ctrl+C while `cp` is blocked mid-download. The stalled body means the
+/// forced shutdown surfaces whatever error the aborted read produces (not
+/// necessarily a clean `Cancelled`), and the interruption must still win:
+/// exit 130, no failure report — the `is_ctrl_c_received()` precedence in
+/// `run_copy_phase`, ported from s3util-rs 1.10.0.
+#[test]
+#[cfg(target_family = "unix")]
+fn sigint_during_cp_download_exits_130() {
+    let fake = spawn_fake_s3_stalled_objects();
+    let local_dir = create_temp_dir("cp_download");
+    let mut args = vec!["cp".to_string()];
+    args.extend(source_client_args(&fake.endpoint));
+    args.push(format!("s3://{BUCKET}/stalled-object.bin"));
+    args.push(format!("{}/", local_dir.to_string_lossy()));
+    let mut child = spawn_s7cmd(&args);
+
+    wait_for_count(&mut child, &fake.object_gets_served, 1, "object GET(s)");
+    interrupt_and_expect_130(child, "cp-download");
+
+    let _ = std::fs::remove_dir_all(&local_dir);
+}
+
+/// Ctrl+C while `mv` is blocked mid-download: same 130 guarantee as `cp`,
+/// plus the safety half of the contract — an interrupted `mv` must never
+/// have deleted its source object.
+#[test]
+#[cfg(target_family = "unix")]
+fn sigint_during_mv_download_exits_130_and_never_deletes_source() {
+    let fake = spawn_fake_s3_stalled_objects();
+    let local_dir = create_temp_dir("mv_download");
+    let mut args = vec!["mv".to_string()];
+    args.extend(source_client_args(&fake.endpoint));
+    args.push(format!("s3://{BUCKET}/stalled-object.bin"));
+    args.push(format!("{}/", local_dir.to_string_lossy()));
+    let mut child = spawn_s7cmd(&args);
+
+    wait_for_count(&mut child, &fake.object_gets_served, 1, "object GET(s)");
+    interrupt_and_expect_130(child, "mv-download");
+
+    assert_eq!(
+        fake.deletes_served.load(Ordering::SeqCst),
+        0,
+        "an interrupted mv must never delete the source object; deleted: {:?}",
+        fake.deleted_keys.lock().unwrap()
+    );
+    let _ = std::fs::remove_dir_all(&local_dir);
+}
+
 // ---- batch-run ----
 
 /// A batch line interrupted by Ctrl+C: the `clean` line's cancellation
@@ -672,6 +804,67 @@ fn clean_without_sigint_exits_zero() {
             "delete requests missing {key}; deleted: {deleted:?}"
         );
     }
+}
+
+#[test]
+fn cp_without_sigint_exits_zero() {
+    let fake = spawn_fake_s3(Some(1));
+    let local_dir = create_temp_dir("cp_control");
+    let mut args = vec!["cp".to_string()];
+    args.extend(source_client_args(&fake.endpoint));
+    args.push(format!("s3://{BUCKET}/object.txt"));
+    args.push(format!("{}/", local_dir.to_string_lossy()));
+    let mut child = spawn_s7cmd(&args);
+
+    let status = wait_with_deadline(&mut child, Duration::from_secs(30));
+    let stderr = read_stderr(&mut child);
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "expected exit 0, got {status:?}\nstderr: {stderr}"
+    );
+    let body = std::fs::read_to_string(local_dir.join("object.txt"))
+        .unwrap_or_else(|e| panic!("cp must have downloaded object.txt: {e}"));
+    assert_eq!(body, OBJECT_BODY, "downloaded body mismatch");
+    let _ = std::fs::remove_dir_all(&local_dir);
+}
+
+#[test]
+fn mv_without_sigint_exits_zero_and_deletes_source() {
+    let fake = spawn_fake_s3(Some(1));
+    let local_dir = create_temp_dir("mv_control");
+    let mut args = vec!["mv".to_string()];
+    args.extend(source_client_args(&fake.endpoint));
+    args.push(format!("s3://{BUCKET}/object.txt"));
+    args.push(format!("{}/", local_dir.to_string_lossy()));
+    let mut child = spawn_s7cmd(&args);
+
+    let status = wait_with_deadline(&mut child, Duration::from_secs(30));
+    let stderr = read_stderr(&mut child);
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "expected exit 0, got {status:?}\nstderr: {stderr}"
+    );
+    let body = std::fs::read_to_string(local_dir.join("object.txt"))
+        .unwrap_or_else(|e| panic!("mv must have downloaded object.txt: {e}"));
+    assert_eq!(body, OBJECT_BODY, "downloaded body mismatch");
+    assert!(
+        fake.deletes_served.load(Ordering::SeqCst) >= 1,
+        "a completed mv must delete the source object"
+    );
+    assert!(
+        fake.deleted_keys
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|key| key == "object.txt"),
+        "delete requests missing object.txt; deleted: {:?}",
+        fake.deleted_keys.lock().unwrap()
+    );
+    let _ = std::fs::remove_dir_all(&local_dir);
 }
 
 #[test]

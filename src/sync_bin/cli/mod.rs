@@ -8,9 +8,11 @@
 //              annotation_mismatch fields added in s3sync 1.59.0.
 //              SIGINT exit code 130 added: after the pipeline stops, a
 //              run interrupted by Ctrl+C returns 130 instead of falling
-//              through to the success/error mapping — an s7cmd addition
-//              (not in upstream s3sync as of 1.61.2), same pattern as
-//              nidor1998/s3rm-rs#100 / nidor1998/s3ls-rs#34.
+//              through to the success/error mapping — landed in s7cmd
+//              first and adopted by upstream s3sync in 1.62.0 (which
+//              calls std::process::exit; s7cmd returns the code so
+//              batch-run survives), same pattern as s3rm-rs@1.6.0 /
+//              s3ls-rs@1.3.0.
 
 use anyhow::{Result, anyhow};
 use s3sync::Config;

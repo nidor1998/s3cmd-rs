@@ -3,7 +3,8 @@
 // Adjustments: flattened from ctrl_c_handler/mod.rs to ctrl_c_handler.rs;
 //              stripped #[cfg(test)] mod tests;
 //              CTRL_C_RECEIVED flag / is_ctrl_c_received() ported from
-//              nidor1998/s3ls-rs#34 so mod.rs can exit 130 on SIGINT;
+//              s3ls-rs@1.3.0 (nidor1998/s3ls-rs#34) so mod.rs can exit
+//              130 on SIGINT;
 //              tests serialize through the process-wide
 //              crate::signal_test_lock instead of a per-module semaphore
 //              (s7cmd has four ctrl_c_handler test modules in one test

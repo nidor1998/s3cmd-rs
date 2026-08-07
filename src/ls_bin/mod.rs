@@ -10,11 +10,11 @@
 //              on Err instead. run() now returns Result<i32> instead of
 //              calling std::process::exit (so it can be invoked from
 //              batch-run without killing the process mid-batch).
-//              SIGINT exit code 130 ported from nidor1998/s3ls-rs#34:
-//              after the pipeline stops, a run interrupted by Ctrl+C
-//              returns 130 instead of falling through to the
-//              success/error mapping — returned rather than upstream's
-//              std::process::exit so batch-run survives.
+//              SIGINT exit code 130 ported from s3ls-rs@1.3.0
+//              (nidor1998/s3ls-rs#34): after the pipeline stops, a run
+//              interrupted by Ctrl+C returns 130 instead of falling
+//              through to the success/error mapping — returned rather
+//              than upstream's std::process::exit so batch-run survives.
 
 use anyhow::Result;
 use tracing::{debug, error};

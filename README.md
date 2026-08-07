@@ -449,11 +449,13 @@ Ctrl-C (SIGINT) for graceful shutdown — `sync`, `ls`, `clean`, `cp`,
 and `mv` — exits with code `130` (128 + SIGINT, the conventional shell
 encoding for termination by signal) when interrupted, and the
 interruption takes precedence over any errors or warnings the aborted
-run had recorded. This is one place s7cmd can differ from the upstream
-documentation linked above: the vendored frontends carry this fix
-ahead of the pinned s3rm-rs / s3ls-rs versions and apply the same
-behavior to `sync`, whose standalone upstream binary currently exits
-`0` on interruption. Subcommands that finish in a single API call
+run had recorded. The pinned library releases ship the same behavior
+in their standalone binaries (s3sync 1.62.0, s3util-rs 1.10.0,
+s3rm-rs 1.6.0, s3ls-rs 1.3.0), so s7cmd and the upstream tools now
+agree on interruption exit codes; the vendored frontends differ only
+in returning the code instead of calling `process::exit`, so
+`batch-run` survives an interrupted line. Subcommands that finish in a
+single API call
 install no handler, so Ctrl-C terminates them through the default
 signal disposition — which shells also report as `130`. At `clean`'s
 confirmation prompt, Ctrl-C likewise terminates immediately via the

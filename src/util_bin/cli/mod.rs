@@ -8,6 +8,11 @@
 //     is reported as a failure (exit 1), not a SIGINT cancellation (exit 130);
 //   - extract_keys: a local target with a trailing '/' resolves to
 //     <dir>/<basename> on every platform (fs_util::has_trailing_separator).
+// Includes the fix from s3util-rs 1.10.0:
+//   - run_copy_phase: Ctrl+C (ctrl_c_handler::is_ctrl_c_received) takes
+//     precedence over any error the forced shutdown surfaced, so an
+//     interrupted cp/mv is reported as a cancellation (exit 130), not a
+//     transfer failure (exit 1).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -561,7 +566,13 @@ pub async fn run_copy_phase(config: Config) -> Result<CopyPhase> {
     // Wait for indicator to finish
     let _ = indicator_handle.await;
 
-    let cancelled = is_user_cancellation(cancellation_token.is_cancelled(), &transfer_result);
+    // Ctrl+C takes precedence over whatever the forced shutdown recorded:
+    // once SIGINT is received the run is "interrupted" (exit 130), even if
+    // the aborted transfer surfaced a non-cancellation error on its way
+    // down — e.g. a body read failed by stalled-stream protection while the
+    // pipeline was being torn down.
+    let cancelled = ctrl_c_handler::is_ctrl_c_received()
+        || is_user_cancellation(cancellation_token.is_cancelled(), &transfer_result);
     let has_warning = has_warning.load(std::sync::atomic::Ordering::SeqCst);
 
     Ok(CopyPhase {
@@ -586,6 +597,11 @@ pub async fn run_copy_phase(config: Config) -> Result<CopyPhase> {
 /// The transfer result is the authoritative signal: a genuine SIGINT surfaces
 /// as `S3syncError::Cancelled` (possibly wrapped in `.context()`), and anything
 /// else is a real failure that must be reported as one.
+///
+/// A genuine SIGINT is additionally recorded in a process-global flag
+/// (`ctrl_c_handler::is_ctrl_c_received`) that `run_copy_phase` consults with
+/// precedence over this decision, so a Ctrl+C whose forced shutdown surfaced a
+/// non-cancellation error is still reported as a cancellation (exit 130).
 fn is_user_cancellation(
     token_cancelled: bool,
     transfer_result: &Result<s3util_rs::transfer::TransferOutcome>,
@@ -781,6 +797,17 @@ mod tests {
         assert_eq!(EXIT_CODE_WARNING, 3);
         assert_eq!(EXIT_CODE_NOT_FOUND, 4);
         assert_eq!(EXIT_CODE_CANCELLED, 130);
+    }
+
+    /// 130 = 128 + SIGINT(2), the conventional shell encoding for a process
+    /// terminated by Ctrl+C.
+    #[test]
+    #[cfg(target_family = "unix")]
+    fn exit_code_cancelled_follows_128_plus_signal_number_convention() {
+        assert_eq!(
+            EXIT_CODE_CANCELLED,
+            128 + nix::sys::signal::Signal::SIGINT as i32
+        );
     }
 
     #[test]

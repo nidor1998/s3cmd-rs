@@ -2,9 +2,9 @@
 //   src/bin/s3sync/cli/ctrl_c_handler/mod.rs
 // Adjustments: stripped #[cfg(test)] mod tests;
 //              CTRL_C_RECEIVED flag / is_ctrl_c_received() added so
-//              mod.rs can exit 130 on SIGINT — an s7cmd addition (not in
-//              upstream s3sync as of 1.61.2), same pattern as the fix
-//              ported from nidor1998/s3rm-rs#100 / nidor1998/s3ls-rs#34;
+//              mod.rs can exit 130 on SIGINT — landed in s7cmd first and
+//              adopted by upstream s3sync in 1.62.0, same pattern as the
+//              fix from s3rm-rs@1.6.0 / s3ls-rs@1.3.0;
 //              tests serialize through the process-wide
 //              crate::signal_test_lock instead of a per-module semaphore
 //              (s7cmd has four ctrl_c_handler test modules in one test
