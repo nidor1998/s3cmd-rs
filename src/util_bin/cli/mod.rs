@@ -225,7 +225,11 @@ pub async fn run_copy_phase(config: Config) -> Result<CopyPhase> {
     let resolved_target_display = format_target_path(&config.target, &target_key);
 
     // Dry-run short-circuit: log the would-do action and skip the transfer,
-    // indicator, ctrl-c handler, and rate limiter.
+    // indicator, and rate limiter. The ctrl-c handler IS spawned (below),
+    // matching upstream, where dry-run flows through the full phase: the
+    // S3-to-S3 annotation listing can take real network time, and a Ctrl+C
+    // during it must be reported as a cancellation (exit 130) via the same
+    // is_ctrl_c_received() precedence as a real transfer.
     //
     // A real S3-to-S3 run also syncs the source object's annotations (that
     // logic lives in the library `transfer()` this command calls). To keep
@@ -239,6 +243,8 @@ pub async fn run_copy_phase(config: Config) -> Result<CopyPhase> {
     // delete, so whichever source_storage is handed back here is never
     // invoked for a mutation.
     if config.dry_run {
+        ctrl_c_handler::spawn_ctrl_c_handler(cancellation_token.clone());
+
         info!(
             source = %source_str,
             target = %resolved_target_display,
@@ -291,12 +297,18 @@ pub async fn run_copy_phase(config: Config) -> Result<CopyPhase> {
             (Ok(TransferOutcome::default()), placeholder_source)
         };
 
+        // Same interruption precedence as the real-transfer tail below: a
+        // Ctrl+C during the dry-run work wins over whatever error the
+        // aborted annotation listing surfaced.
+        let cancelled = ctrl_c_handler::is_ctrl_c_received()
+            || is_user_cancellation(cancellation_token.is_cancelled(), &transfer_result);
+
         return Ok(CopyPhase {
             transfer_result,
             source_storage,
             source_key,
             cancellation_token,
-            cancelled: false,
+            cancelled,
             has_warning: false,
         });
     }

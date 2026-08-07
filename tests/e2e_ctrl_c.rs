@@ -369,20 +369,29 @@ async fn cancel_ls_sigint_mid_paginated_listing_exits_130() {
     helper.delete_bucket_with_cascade(&bucket).await;
 }
 
-/// clean over 200 objects with `--batch-size 10 --rate-limit-objects 10`
-/// keeps the deletion pipeline busy for ~20s of theoretical work, so SIGINT
-/// lands mid-run at any delay in `STARTUP_DELAYS_MS` (at most 9s) and
-/// drives the post-run "deletion cancelled by user" branch (exit 130). A
-/// leaky-bucket burst that drained the bucket before the signal would
-/// surface as exit 0 here — that would mean the throttle window shrank and
-/// the workload needs re-tuning, not that the cancellation path regressed.
+/// clean over 300 objects with `--worker-size 1 --batch-size 10
+/// --rate-limit-objects 10` keeps the deletion pipeline busy for ~29s of
+/// deterministic work, so SIGINT lands mid-run at any delay in
+/// `STARTUP_DELAYS_MS` (at most 9s) and drives the post-run "deletion
+/// cancelled by user" branch (exit 130).
+///
+/// Margin math — the workload must survive `run_with_sigint`'s retry
+/// escalation, which re-runs `clean` on the SAME (partially drained)
+/// bucket: the single worker serializes batches, so each fresh process
+/// drains at most the 10-token initial burst plus 10 objects/sec of run
+/// time. Worst case across all three attempts (2s + 5s + 9s of running,
+/// three bursts) is ~190 objects — well short of 300, so the final
+/// attempt still interrupts a busy run. The sibling
+/// `cancel_clean_sigint_does_not_hang` keeps the soft assertion for the
+/// default multi-worker configuration, whose burst behavior has been
+/// observed to outrun the nominal rate.
 #[tokio::test]
 async fn cancel_clean_sigint_mid_deletion_exits_130() {
     let _serial = SIGINT_TEST_LOCK.lock().await;
     let helper = TestHelper::new().await;
     let bucket = generate_bucket_name();
     helper.create_bucket(&bucket, REGION).await;
-    for i in 0..200 {
+    for i in 0..300 {
         helper
             .put_object(&bucket, &format!("k{i:04}"), b"x".to_vec())
             .await;
@@ -397,6 +406,8 @@ async fn cancel_clean_sigint_mid_deletion_exits_130() {
         "--target-region",
         REGION,
         "--force",
+        "--worker-size",
+        "1",
         "--batch-size",
         "10",
         "--rate-limit-objects",

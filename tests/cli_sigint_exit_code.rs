@@ -27,7 +27,7 @@ use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -55,6 +55,12 @@ struct FakeS3 {
     object_gets_served: Arc<AtomicUsize>,
     deletes_served: Arc<AtomicUsize>,
     deleted_keys: Arc<Mutex<Vec<String>>>,
+    annotation_pages_served: Arc<AtomicUsize>,
+    /// While false, `ListObjectAnnotations` responses carry a continuation
+    /// token (endless listing); set to true to make the next response the
+    /// final page. The annotation listing loop is deliberately
+    /// non-cancellable in the library, so tests end it from the outside.
+    finish_annotations: Arc<AtomicBool>,
 }
 
 /// Serve canned S3 responses over plain HTTP/1.1, one request per
@@ -91,11 +97,15 @@ fn spawn_fake_s3_impl(total_pages: Option<usize>, stall_object_bodies: bool) -> 
     let object_gets_served = Arc::new(AtomicUsize::new(0));
     let deletes_served = Arc::new(AtomicUsize::new(0));
     let deleted_keys = Arc::new(Mutex::new(Vec::new()));
+    let annotation_pages_served = Arc::new(AtomicUsize::new(0));
+    let finish_annotations = Arc::new(AtomicBool::new(false));
 
     let pages = Arc::clone(&pages_served);
     let gets = Arc::clone(&object_gets_served);
     let deletes = Arc::clone(&deletes_served);
     let keys = Arc::clone(&deleted_keys);
+    let annotation_pages = Arc::clone(&annotation_pages_served);
+    let finish_ann = Arc::clone(&finish_annotations);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
@@ -125,6 +135,8 @@ fn spawn_fake_s3_impl(total_pages: Option<usize>, stall_object_bodies: bool) -> 
                 &gets,
                 &deletes,
                 &keys,
+                &annotation_pages,
+                &finish_ann,
             );
             let _ = stream.write_all(&response);
             let _ = stream.flush();
@@ -137,6 +149,8 @@ fn spawn_fake_s3_impl(total_pages: Option<usize>, stall_object_bodies: bool) -> 
         object_gets_served,
         deletes_served,
         deleted_keys,
+        annotation_pages_served,
+        finish_annotations,
     }
 }
 
@@ -149,6 +163,7 @@ fn is_object_request(request_line: &str) -> bool {
     (method == "GET" || method == "HEAD")
         && !has_query_param(target, "versioning")
         && !has_query_param(target, "list-type")
+        && !has_query_param(target, "annotation")
 }
 
 /// Response for the stalled object: full headers advertising
@@ -221,6 +236,7 @@ fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
     Some((request_line, body))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn route_request(
     request_line: &str,
     request_body: &str,
@@ -229,6 +245,8 @@ fn route_request(
     object_gets_served: &AtomicUsize,
     deletes_served: &AtomicUsize,
     deleted_keys: &Mutex<Vec<String>>,
+    annotation_pages_served: &AtomicUsize,
+    finish_annotations: &AtomicBool,
 ) -> Vec<u8> {
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
@@ -239,6 +257,16 @@ fn route_request(
         // with the `versions` (ListObjectVersions) query parameter.
         "GET" if has_query_param(target, "versioning") => {
             xml_response("200 OK", &versioning_enabled_page())
+        }
+        // ListObjectAnnotations (cp/mv annotation sync; `?annotation` with
+        // `x-id=ListObjectAnnotations`). Pages are endless until
+        // `finish_annotations` is set, keeping the child inside the
+        // library's (deliberately non-cancellable) listing loop until the
+        // test decides to let it finish.
+        "GET" if has_query_param(target, "annotation") => {
+            let page = annotation_pages_served.fetch_add(1, Ordering::SeqCst);
+            let truncated = !finish_annotations.load(Ordering::SeqCst);
+            xml_response("200 OK", &annotations_page(page, truncated))
         }
         // ListObjectsV2. Every object `GET` the AWS SDK issues carries
         // `x-id=GetObject` but never `list-type`, so this param is the
@@ -329,6 +357,21 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
     let start = xml.find(&open)? + open.len();
     let end = xml[start..].find(&close)? + start;
     Some(xml[start..end].to_string())
+}
+
+/// One `ListObjectAnnotations` page carrying a single annotation entry,
+/// truncated (continuation token present) or final. Shape mirrors the
+/// deserializer's expectations as pinned by s3util-rs's own paging tests.
+fn annotations_page(page: usize, truncated: bool) -> String {
+    let next_token = if truncated {
+        format!("<NextContinuationToken>ann-token-{page}</NextContinuationToken>")
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListObjectAnnotationsOutput><Annotations><AnnotationEntry><AnnotationName>note-{page}</AnnotationName><LastModified>2026-01-01T00:00:00.000Z</LastModified><Size>1</Size></AnnotationEntry></Annotations>{next_token}</ListObjectAnnotationsOutput>"#
+    )
 }
 
 fn versioning_enabled_page() -> String {
@@ -701,6 +744,67 @@ fn sigint_during_mv_download_exits_130_and_never_deletes_source() {
     let _ = std::fs::remove_dir_all(&local_dir);
 }
 
+/// Ctrl+C during a `cp --dry-run` whose S3-to-S3 annotation listing is
+/// taking real network time. The dry-run path runs no transfer, but it must
+/// still install the Ctrl+C handler and report the interruption as a
+/// cancellation — before this fix the dry-run early return in
+/// `run_copy_phase` installed no handler and hard-coded `cancelled: false`,
+/// so inside batch-run the line would have finished as a success (upstream
+/// s3util-rs routes dry-run through the full flag-consulting phase);
+/// standalone, the process died to the default disposition instead of
+/// exiting gracefully.
+#[test]
+#[cfg(target_family = "unix")]
+fn sigint_during_cp_dry_run_annotation_listing_exits_130() {
+    let fake = spawn_fake_s3(None);
+    let mut args = vec![
+        "cp".to_string(),
+        "--dry-run".to_string(),
+        "--enable-sync-object-annotations".to_string(),
+    ];
+    args.extend(source_client_args(&fake.endpoint));
+    // `--aws-max-attempts` is a shared (not per-side) flag and is already
+    // supplied by the source set above; drop it from the target set (its
+    // last two elements) to avoid a duplicate-argument clap error.
+    let mut target_args = target_client_args(&fake.endpoint);
+    target_args.truncate(target_args.len() - 2);
+    args.extend(target_args);
+    args.push(format!("s3://{BUCKET}/annotated-src.bin"));
+    args.push(format!("s3://{BUCKET}/annotated-dst.bin"));
+    let mut child = spawn_s7cmd(&args);
+
+    wait_for_count(
+        &mut child,
+        &fake.annotation_pages_served,
+        3,
+        "annotation page(s)",
+    );
+    send_sigint(&child);
+    // The library's annotation listing loop deliberately ignores
+    // cancellation (annotation integrity), so end the listing from the
+    // fake's side: the next page is final, and the frontend must then
+    // report the interruption rather than the listing's success.
+    fake.finish_annotations.store(true, Ordering::SeqCst);
+
+    let status = wait_with_deadline(&mut child, Duration::from_secs(15));
+    let stderr = read_stderr(&mut child);
+
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "[cp-dry-run] expected graceful exit 130 after SIGINT, got {status:?}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked") && !stderr.contains("failed."),
+        "[cp-dry-run] SIGINT should terminate without failure logs\nstderr: {stderr}"
+    );
+    assert_eq!(
+        fake.object_gets_served.load(Ordering::SeqCst),
+        0,
+        "a dry run must never download objects"
+    );
+}
+
 // ---- batch-run ----
 
 /// A batch line interrupted by Ctrl+C: the `clean` line's cancellation
@@ -740,6 +844,77 @@ fn batch_run_clean_line_interrupted_by_sigint_exits_130() {
     assert!(
         !stderr.contains("panicked"),
         "SIGINT should terminate without panics\nstderr: {stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&script_dir);
+}
+
+/// The parallel executor's spawn loop checks the interrupt flag at the top
+/// of each iteration, then awaits a semaphore permit — a window where a
+/// SIGINT can land while all workers are busy. The permit freed by an
+/// interrupted line must NOT dispatch the next queued line: its freshly
+/// installed Ctrl+C handler would never see the already-delivered signal,
+/// so it would run to full completion (real requests included) yet read
+/// the process-global interruption state stored by a sibling line and
+/// misreport as skipped. Guards the post-await interrupt re-check.
+///
+/// Layout: 2 workers, 3 lines. Lines 1-2 list endlessly on their own
+/// endpoints (both provably in flight before SIGINT), line 3 targets a
+/// third endpoint that must never receive a request.
+#[test]
+#[cfg(target_family = "unix")]
+fn batch_run_parallel_queued_line_after_sigint_never_runs() {
+    let busy_a = spawn_fake_s3(None);
+    let busy_b = spawn_fake_s3(None);
+    let queued = spawn_fake_s3(Some(1));
+    let script_dir = create_temp_dir("batch_run_parallel");
+    let script_path = script_dir.join("script.txt");
+    let ls_line = |endpoint: &str| {
+        format!(
+            "ls --recursive {} s3://{BUCKET}/",
+            target_client_args(endpoint).join(" "),
+        )
+    };
+    let script = format!(
+        "{}\n{}\n{}\n",
+        ls_line(&busy_a.endpoint),
+        ls_line(&busy_b.endpoint),
+        ls_line(&queued.endpoint),
+    );
+    std::fs::write(&script_path, script).expect("write batch script");
+
+    let args = vec![
+        "batch-run".to_string(),
+        "--parallel".to_string(),
+        "2".to_string(),
+        script_path.to_string_lossy().into_owned(),
+    ];
+    let mut child = spawn_s7cmd(&args);
+
+    // Both workers provably mid-listing => their Ctrl+C handlers are
+    // installed, both permits are held, and the spawn loop is parked on
+    // `acquire_owned().await` for line 3.
+    wait_for_count(&mut child, &busy_a.pages_served, 2, "list page(s) (line 1)");
+    wait_for_count(&mut child, &busy_b.pages_served, 2, "list page(s) (line 2)");
+    send_sigint(&child);
+
+    let status = wait_with_deadline(&mut child, Duration::from_secs(15));
+    let stderr = read_stderr(&mut child);
+
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "expected batch-run to exit 130 after its lines were interrupted, got {status:?}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "SIGINT should terminate without panics\nstderr: {stderr}"
+    );
+    assert_eq!(
+        queued.pages_served.load(Ordering::SeqCst),
+        0,
+        "the queued third line must not run after SIGINT (permit freed by an \
+         interrupted line must not dispatch it)\nstderr: {stderr}"
     );
 
     let _ = std::fs::remove_dir_all(&script_dir);

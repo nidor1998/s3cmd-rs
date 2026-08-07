@@ -14,9 +14,11 @@ release (see **Added**).
 
 **Upgrade notes:**
 
-- [Breaking change] `sync`, `ls`, and `clean` runs interrupted by Ctrl+C (SIGINT) now exit with code `130` instead
-  of `0`. Scripts and automation that test the exit status should treat `130` as user interruption rather than
-  success.
+- [Breaking change] `sync`, `ls`, and `clean` runs interrupted by Ctrl+C (SIGINT) now exit with code `130`.
+  Previously an interrupted `ls` or `clean` exited `0`, and an interrupted `sync` exited `0`, `1`, or `3`
+  depending on what the aborted run had recorded. Scripts and automation that test the exit status should treat
+  `130` as user interruption rather than success — and, for `sync`, no longer expect an interrupted run to
+  surface as `1` or `3`.
 
 ### Added
 
@@ -30,8 +32,9 @@ release (see **Added**).
 #### sync / ls / clean
 
 - [Breaking change] A run interrupted by Ctrl+C (SIGINT) now exits with code 130 (128 + SIGINT, the conventional
-  shell encoding for termination by signal) instead of 0. Previously an interrupted run was indistinguishable from
-  a successful one by its exit code, and the interruption exit code was inconsistent across subcommands (`cp` and
+  shell encoding for termination by signal). Previously an interrupted `ls` or `clean` exited 0 —
+  indistinguishable from a successful run — while an interrupted `sync` exited 0, 1, or 3 depending on what the
+  aborted shutdown had recorded, and the interruption exit code was inconsistent across subcommands (`cp` and
   `mv` already exited 130). The Ctrl+C handler records the signal in a process-global flag before cancelling the
   pipeline, and the frontend checks it once the pipeline has stopped — the interruption takes precedence over
   whatever the forced shutdown recorded, so in particular a Ctrl+C'd `clean` that had already collected genuine
@@ -50,9 +53,11 @@ release (see **Added**).
 #### batch-run
 
 - A Ctrl+C'd `sync`, `ls`, or `clean` line inside a batch is now bucketed `skipped (exit 130)` — matching `cp` and
-  `mv` — where it was previously bucketed `succeeded`. The engines return the interruption code instead of exiting
-  the process, so batch-run itself keeps running exactly as before; the batch exit code follows the existing
-  severity ranking, under which an interrupted batch with no other failures exits 130.
+  `mv` — where it was previously bucketed by whatever exit code the interrupted run happened to produce:
+  `succeeded` for `ls`, `clean`, and most `sync` lines, but `failures` or `warnings` for a `sync` whose aborted
+  shutdown had recorded errors or warnings. The engines return the interruption code instead of exiting the
+  process, so batch-run itself keeps running exactly as before; the batch exit code follows the existing severity
+  ranking, under which an interrupted batch with no other failures exits 130.
 
 ### Changed
 
