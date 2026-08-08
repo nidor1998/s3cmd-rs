@@ -28,10 +28,7 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
         Cmd::Sync(boxed_args) => {
             let mut config = match s3sync::Config::try_from(*boxed_args) {
                 Ok(c) => c,
-                Err(msg) => {
-                    let _ = clap::Error::raw(clap::error::ErrorKind::ValueValidation, msg).print();
-                    return 2;
-                }
+                Err(msg) => return print_config_error(msg),
             };
             // s3sync's main: when reporting sync status, force dry_run=true.
             if config.report_sync_status {
@@ -61,10 +58,7 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
         Cmd::Ls(boxed_args) => {
             let config = match s3ls_rs::config::Config::try_from(*boxed_args) {
                 Ok(c) => c,
-                Err(msg) => {
-                    let _ = clap::Error::raw(clap::error::ErrorKind::ValueValidation, msg).print();
-                    return 2;
-                }
+                Err(msg) => return print_config_error(msg),
             };
             ls_bin::start_tracing_if_necessary(&config);
             tracing::trace!(target: "s3ls", "config = {:?}", config);
@@ -80,10 +74,7 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
         Cmd::Clean(boxed_args) => {
             let config = match s3rm_rs::config::Config::try_from(*boxed_args) {
                 Ok(c) => c,
-                Err(msg) => {
-                    let _ = clap::Error::raw(clap::error::ErrorKind::ValueValidation, msg).print();
-                    return 2;
-                }
+                Err(msg) => return print_config_error(msg),
             };
             clean_bin::start_tracing_if_necessary(&config);
             tracing::trace!(target: "s3rm", "config = {:?}", config);
@@ -104,10 +95,7 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
         Cmd::Cp(args) => {
             let config = match s3util_rs::Config::try_from(args) {
                 Ok(c) => c,
-                Err(msg) => {
-                    let _ = clap::Error::raw(clap::error::ErrorKind::ValueValidation, msg).print();
-                    return 2;
-                }
+                Err(msg) => return print_config_error(msg),
             };
             start_tracing_if_necessary(&config);
             trace_config_summary(&config);
@@ -123,10 +111,7 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
         Cmd::Mv(args) => {
             let config = match s3util_rs::Config::try_from(args) {
                 Ok(c) => c,
-                Err(msg) => {
-                    let _ = clap::Error::raw(clap::error::ErrorKind::ValueValidation, msg).print();
-                    return 2;
-                }
+                Err(msg) => return print_config_error(msg),
             };
             start_tracing_if_necessary(&config);
             trace_config_summary(&config);
@@ -141,8 +126,7 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
 
         Cmd::Rename(args) => {
             if let Err(e) = args.validate() {
-                let _ = clap::Error::raw(clap::error::ErrorKind::ValueValidation, e).print();
-                return 2;
+                return print_config_error(e);
             }
             let client_config = args.build_client_config();
             match util_bin::cli::run_rename(args, client_config).await {
@@ -438,6 +422,19 @@ pub async fn dispatch(cmd: Cmd) -> i32 {
             status_to_exit(util_bin::cli::run_presign(args, client_config).await)
         }
     }
+}
+
+/// Print a config-validation error to stderr and return exit code 2.
+///
+/// `clap::Error::raw(..).print()` writes the message exactly as given —
+/// unlike clap's formatted errors it appends no trailing newline — so the
+/// shell prompt would otherwise land on the same line as the message.
+/// Upstream messages vary (some already end with `\n`); normalize to
+/// exactly one trailing newline.
+fn print_config_error(msg: impl std::fmt::Display) -> i32 {
+    let msg = format!("{}\n", msg.to_string().trim_end_matches('\n'));
+    let _ = clap::Error::raw(clap::error::ErrorKind::ValueValidation, msg).print();
+    2
 }
 
 // ── Vendored from s3util-rs@1.1.0/src/bin/s3util/main.rs ─────────────

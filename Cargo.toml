@@ -1,6 +1,6 @@
 [package]
 name = "s7cmd"
-version = "1.8.0"
+version = "1.8.1"
 edition = "2024"
 rust-version = "1.94.1"
 license = "Apache-2.0"
@@ -17,10 +17,10 @@ categories = ["command-line-utilities", "filesystem"]
 # (--filter-callback-lua-script, etc.) automatically appear under
 # `s7cmd sync --help`. Use default-features = false to opt out.
 s3sync     = "=1.62.0"
-s3util-rs  = "=1.10.0"
+s3util-rs  = "=1.10.1"
 # Vendored bin code is sourced from these versions; pin minor.
-s3rm-rs    = "=1.6.0"
-s3ls-rs    = "=1.3.0"
+s3rm-rs    = "=1.6.1"
+s3ls-rs    = "=1.3.1"
 
 # Build-info for `s7cmd --version` (gated behind the `version` feature).
 shadow-rs = { version = "2", optional = true, default-features = false }
