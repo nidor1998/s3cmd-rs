@@ -39,6 +39,44 @@ fn both_local_paths_exit_non_zero_with_validation_message_on_stderr() {
         "expected the check_both_local validation message on stderr.\n\
          --- stderr ---\n{stderr}"
     );
+
+    assert!(
+        stderr.ends_with('\n'),
+        "validation message must end with a newline so the shell prompt \
+         starts on its own line.\n--- stderr ---\n{stderr:?}"
+    );
+}
+
+#[test]
+fn ls_recursive_without_path_prints_newline_terminated_error() {
+    // Regression guard: `s7cmd ls -r` (bucket listing mode) fails in
+    // s3ls_rs Config::try_from; dispatch prints the message via
+    // clap::Error::raw, which appends no newline on its own. Without the
+    // normalization in `print_config_error` the shell prompt would land
+    // on the same line as the error text.
+    let bin = env!("CARGO_BIN_EXE_s7cmd");
+
+    let output = Command::new(bin)
+        .args(["ls", "-r"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to spawn s7cmd binary");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr.contains("--recursive is not valid for bucket listing"),
+        "expected the recursive-vs-bucket-listing message on stderr.\n\
+         --- stderr ---\n{stderr}"
+    );
+    assert!(
+        stderr.ends_with('\n') && !stderr.ends_with("\n\n"),
+        "validation message must end with exactly one newline.\n\
+         --- stderr ---\n{stderr:?}"
+    );
 }
 
 #[test]
