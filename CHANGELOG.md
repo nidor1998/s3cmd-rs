@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] - 2026-08-08
+
+Bug-fix release. Command-line validation error messages are now always terminated with a newline; previously some
+were printed without one, leaving the next shell prompt on the same line as the error text. The three library pins
+move to the upstream releases of the same fix.
+
+### Fixed
+
+#### sync, ls, clean, cp, mv, rename
+
+- Config-validation error messages (the exit-2 failures raised after clap parsing succeeds, e.g.
+  `error: --recursive is not valid for bucket listing` from `ls -r`, or
+  `error: source S3 URL ending in '/' is not supported: ...` from `cp`) now end with exactly one newline.
+  These messages are printed through `clap::Error::raw`, which writes the message verbatim without appending a
+  newline, so the shell prompt previously landed on the same line as the error. Message texts and exit codes are
+  unchanged; messages that already carried a trailing newline are normalized to a single one.
+
+### Changed
+
+- s3util-rs `v1.10.0 -> v1.10.1`
+- s3rm-rs `v1.6.0 -> v1.6.1`
+- s3ls-rs `v1.3.0 -> v1.3.1`
+
+These are the upstream releases of the same trailing-newline fix for the standalone `s3util`, `s3rm`, and `s3ls`
+binaries. The fixes live in the upstream binary frontends, whose error-printing paths s7cmd replaces with its own
+dispatch layer (fixed here directly), so the pin bumps change no s7cmd behavior on their own. No other
+dependencies were updated.
+
+### Underlying libraries
+
+```toml
+s3sync = "=1.62.0"
+s3util-rs = "=1.10.1"
+s3rm-rs = "=1.6.1"
+s3ls-rs = "=1.3.1"
+```
+
 ## [1.8.0] - 2026-08-08
 
 Bug-fix release, taken as a minor version because the fix changes an observable exit code. All four underlying
