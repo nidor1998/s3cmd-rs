@@ -5,6 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-08-22
+
+Monthly update.
+
+Bug-fix release. All four pinned libraries move to their latest patch releases. The visible changes come from
+s3util-rs: the object-annotation subcommands now report every checksum and pagination key S3 returns, and
+`put-bucket-lifecycle-configuration` accepts the full ISO 8601 `Date` syntax instead of only its RFC 3339 subset.
+The release also carries the remediation of RUSTSEC-2026-0258 in the transitive `h2` dependency.
+
+### Security
+
+- Updated the transitive `h2` dependency to `v0.4.18`, remediating
+  [RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258) ("h2 unbounded empty DATA frames"). `h2`
+  reaches s7cmd through `hyper`, which the AWS SDK's HTTP client uses for the HTTP/2 connections it opens to Amazon
+  S3. Affected versions of `h2` accepted and queued empty HTTP/2 DATA frames without any limit, so a peer that
+  streamed them at a connection whose streams were not being actively drained could drive unbounded memory growth in
+  the client, or a panic if the queued length overflowed. Reaching that state requires a hostile or compromised
+  endpoint on the other side of the connection, which makes the practical exposure for s7cmd talking to Amazon S3
+  low, and the advisory is rated low severity upstream. Cargo.lock-only, no public API or behavior change.
+
+### Fixed
+
+#### put-object-annotation, get-object-annotation
+
+- The JSON report omitted most of the checksums S3 can return. `put-object-annotation` emitted only
+  `ChecksumCRC64NVME`, dropping the other nine `x-amz-checksum-*` values, and `get-object-annotation` omitted
+  `ChecksumSHA512`, `ChecksumMD5`, `ChecksumXXHASH64`, `ChecksumXXHASH3`, and `ChecksumXXHASH128` — the algorithms
+  that cannot be recomputed locally, which s7cmd already detects and reports on elsewhere. An annotation written by
+  another client under one of those algorithms therefore showed no checksum in the report. Both commands now emit
+  every checksum S3 returns, matching what `head-object` has always done. Only the JSON report changes; the
+  integrity verification both commands perform is unaffected.
+
+#### list-object-annotations
+
+- The JSON report omitted `MaxAnnotationResults` and `ContinuationToken`. Both are returned by S3, and without them
+  a caller that sees `IsTruncated: true` cannot tell what page size was in effect or which token produced the page
+  it is holding. Both keys are now emitted, as explicit `null` when absent — matching how the report already treats
+  `AnnotationPrefix`, `ObjectVersionId`, `RequestCharged`, and `NextContinuationToken`.
+
+#### put-bucket-lifecycle-configuration
+
+- `Date` values that are valid ISO 8601 and accepted by `aws s3api` were rejected. S3 documents the Lifecycle
+  `Expiration`/`Transition` `Date` as ISO 8601, but only the RFC 3339 subset of it was accepted, so the basic format
+  (`20300102T030405Z`, `20300102`), offsets written without a colon (`+0900`) or as hours only (`+09`), and a
+  date-time carrying no offset at all (`2030-01-02T03:04:05`, read as UTC) all failed with
+  `invalid ISO 8601 timestamp`. All are now accepted and normalised to UTC. Validation is otherwise unchanged:
+  malformed values such as `2030-1-2`, and well-shaped but impossible ones such as `20301301` or `20300230T000000Z`,
+  are still rejected — and the error message now shows examples of the shapes that are accepted.
+
+### Changed
+
+- s3sync `v1.62.0 -> v1.62.1`
+- s3util-rs `v1.10.1 -> v1.10.2`
+- s3rm-rs `v1.6.1 -> v1.6.2`
+- s3ls-rs `v1.3.1 -> v1.3.2`
+- aws-sdk-s3 `v1.140.0 -> v1.143.0`
+- Updated other dependencies
+
+### Underlying libraries
+
+```toml
+s3sync = "=1.62.1"
+s3util-rs = "=1.10.2"
+s3rm-rs = "=1.6.2"
+s3ls-rs = "=1.3.2"
+```
+
 ## [1.8.1] - 2026-08-08
 
 Bug-fix release. Command-line validation error messages are now always terminated with a newline; previously some
