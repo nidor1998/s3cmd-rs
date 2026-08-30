@@ -1,44 +1,77 @@
 name: Bug report
-description: Report a clear, reproducible bug in s7cmd. Bug reports only. This project accepts no feature requests and no questions of any kind.
+description: Report a clear, reproducible bug in s7cmd, s3sync, s3ls, s3rm, or s3util. Bug reports only. These projects accept no feature requests and no questions of any kind.
 title: "[Bug] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
+        ## Scope of this issue tracker
+
+        This tracker handles bug reports for all of the following projects.
+        Select the affected one in the **Project** field below, and read that
+        project's Scope and Non-Goals before filing:
+
+        | Project | Repository | Scope and Non-Goals |
+        | --- | --- | --- |
+        | `s7cmd` | [nidor1998/s7cmd](https://github.com/nidor1998/s7cmd) | [Scope](https://github.com/nidor1998/s7cmd/blob/main/README.md#scope) / [Non-Goals](https://github.com/nidor1998/s7cmd/blob/main/README.md#non-goals) |
+        | `s3sync` | [nidor1998/s3sync](https://github.com/nidor1998/s3sync) | [Scope](https://github.com/nidor1998/s3sync/blob/main/README.md#scope) / [Non-Goals](https://github.com/nidor1998/s3sync/blob/main/README.md#non-goals) |
+        | `s3ls` | [nidor1998/s3ls-rs](https://github.com/nidor1998/s3ls-rs) | [Scope](https://github.com/nidor1998/s3ls-rs/blob/main/README.md#scope) / [Non-Goals](https://github.com/nidor1998/s3ls-rs/blob/main/README.md#non-goals) |
+        | `s3rm` | [nidor1998/s3rm-rs](https://github.com/nidor1998/s3rm-rs) | [Scope](https://github.com/nidor1998/s3rm-rs/blob/main/README.md#scope) / [Non-Goals](https://github.com/nidor1998/s3rm-rs/blob/main/README.md#non-goals) |
+        | `s3util` | [nidor1998/s3util-rs](https://github.com/nidor1998/s3util-rs) | [Scope](https://github.com/nidor1998/s3util-rs/blob/main/README.md#scope) / [Non-Goals](https://github.com/nidor1998/s3util-rs/blob/main/README.md#non-goals) |
+
+        Note that s7cmd is built on the s3sync, s3util-rs, s3rm-rs, and s3ls-rs
+        libraries. If you are unsure which project is at fault, report it against
+        the binary you actually ran; it will be moved if it belongs elsewhere.
+
         ## Contributing
 
         - Bug reports are welcome, but responses are not guaranteed.
-        - Since this project is considered functionally complete, I will not accept any feature requests.
-        - If you find this project useful, feel free to fork and modify it as you wish.
+        - Since these projects are considered functionally complete, I will not accept any feature requests.
+        - If you find these projects useful, feel free to fork and modify them as you wish.
 
-        I consider this project "complete" and will maintain it only minimally going
-        forward. However, I intend to keep the AWS SDK for Rust and other dependencies
-        up to date monthly.
+        I consider these projects "complete" and will maintain them only minimally
+        going forward. However, I intend to keep the AWS SDK for Rust and other
+        dependencies up to date monthly.
 
         ## Before opening an issue
 
-        Please read the [Scope and Non-Goals](https://github.com/nidor1998/s7cmd/blob/main/README.md#scope)
-        and [Maintenance Model](https://github.com/nidor1998/s7cmd/blob/main/README.md#maintenance-model)
-        sections of the README first. **Issues asking about behavior already documented
-        in the README, including anything listed under Non-Goals, will be closed
-        without further discussion.** This is not a rejection of your input; it is the
+        Please read the Scope and Non-Goals sections of the selected project's
+        README, and the [Maintenance Model](https://github.com/nidor1998/s7cmd/blob/main/README.md#maintenance-model)
+        section, first. **Issues asking about behavior already documented in that
+        README, including anything listed under Non-Goals, will be closed without
+        further discussion.** This is not a rejection of your input; it is the
         project's documented scope and maintenance posture.
 
         This form is for bug reports only. **Anything that is not a clear, reproducible
-        bug in s7cmd itself, including feature requests, questions, usage help,
-        configuration help, and discussion threads, will be closed unconditionally.**
+        bug in the selected project itself, including feature requests, questions,
+        usage help, configuration help, and discussion threads, will be closed
+        unconditionally.**
 
-        **This project is intended for users who can self-resolve usage questions,
+        **These projects are intended for users who can self-resolve usage questions,
         configuration issues, and environment-specific problems. Only clear,
-        reproducible bugs in s7cmd itself are accepted. Nothing else.** No support,
-        no questions, no feature requests, no usage help.
+        reproducible bugs in the projects themselves are accepted. Nothing else.**
+        No support, no questions, no feature requests, no usage help.
 
         ## Issue lifecycle
 
         Issues with no activity for 30 days are labeled `stale` and closed 7 days later
         unless a new comment is added. Items labeled `pinned` or `security` are exempt.
         Closed issues can always be reopened.
+
+  - type: dropdown
+    id: project
+    attributes:
+      label: Project
+      description: The project the bug is in. Select the binary you actually ran.
+      options:
+        - s7cmd
+        - s3sync
+        - s3ls (s3ls-rs)
+        - s3rm (s3rm-rs)
+        - s3util (s3util-rs)
+    validations:
+      required: true
 
   - type: checkboxes
     id: prerequisites
@@ -48,17 +81,17 @@ body:
         Every box must be checked. Issues that do not qualify, or whose actual
         content contradicts a box that was checked, are closed without review.
       options:
-        - label: I have read and understood all of the explanatory text in this template above, including Contributing, Before opening an issue, and Issue lifecycle.
+        - label: I have read and understood all of the explanatory text in this template above, including Scope of this issue tracker, Contributing, Before opening an issue, and Issue lifecycle.
           required: true
-        - label: I have read the README (including Scope and Non-Goals) and confirmed this issue is not already documented.
+        - label: I have read the selected project's README (including its Scope and Non-Goals sections) and confirmed this issue is not already documented.
           required: true
         - label: I have searched existing issues (open and closed) and this is not a duplicate.
           required: true
-        - label: This issue is a bug report. It is NOT a request for a new feature. I understand that s7cmd is functionally complete and accepts no new feature requests of any kind, under any circumstances.
+        - label: This issue is a bug report. It is NOT a request for a new feature. I understand that these projects are functionally complete and accept no new feature requests of any kind, under any circumstances.
           required: true
-        - label: This issue is a report of a clear, reproducible bug in s7cmd itself. It is not a question, nor a request for usage or configuration help.
+        - label: This issue is a report of a clear, reproducible bug in the selected project itself. It is not a question, nor a request for usage or configuration help.
           required: true
-        - label: I have reproduced this on the latest release of s7cmd. Only the latest release is supported.
+        - label: I have reproduced this on the latest release of the selected project. Only the latest release is supported.
           required: true
         - label: I am using Amazon S3. Issues regarding MinIO, Cloudflare R2, Ceph RGW or any other S3-compatible service are closed automatically, unconditionally, and without exception.
           required: true
@@ -68,9 +101,13 @@ body:
   - type: input
     id: version
     attributes:
-      label: s7cmd version
-      description: Output of `s7cmd --version`. Only the latest release is supported. Reports filed against any other version are closed automatically.
-      placeholder: "e.g. 1.4.2"
+      label: Version
+      description: >
+        Output of `--version` for the project selected above (`s7cmd --version`,
+        `s3sync --version`, `s3ls --version`, `s3rm --version`, or
+        `s3util --version`). Only the latest release is supported. Reports filed
+        against any other version are closed automatically.
+      placeholder: "e.g. s7cmd 1.8.2"
     validations:
       required: true
 

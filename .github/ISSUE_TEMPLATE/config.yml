@@ -1,9 +1,21 @@
 blank_issues_enabled: false
 
 contact_links:
-  - name: Scope and Non-Goals
+  - name: s7cmd — Scope and Non-Goals
     url: https://github.com/nidor1998/s7cmd/blob/main/README.md#scope
     about: Behavior documented here — including anything under Non-Goals — is out of scope. Please read this before filing.
-  - name: Maintenance Model
+  - name: s3sync — Scope and Non-Goals
+    url: https://github.com/nidor1998/s3sync/blob/main/README.md#scope
+    about: Behavior documented here — including anything under Non-Goals — is out of scope. Please read this before filing.
+  - name: s3ls — Scope and Non-Goals
+    url: https://github.com/nidor1998/s3ls-rs/blob/main/README.md#scope
+    about: Behavior documented here — including anything under Non-Goals — is out of scope. Please read this before filing.
+  - name: s3rm — Scope and Non-Goals
+    url: https://github.com/nidor1998/s3rm-rs/blob/main/README.md#scope
+    about: Behavior documented here — including anything under Non-Goals — is out of scope. Please read this before filing.
+  - name: s3util — Scope and Non-Goals
+    url: https://github.com/nidor1998/s3util-rs/blob/main/README.md#scope
+    about: Behavior documented here — including anything under Non-Goals — is out of scope. Please read this before filing.
+  - name: Maintenance Model (applies to all of these projects)
     url: https://github.com/nidor1998/s7cmd/blob/main/README.md#maintenance-model
-    about: This project is functionally complete. No feature requests, questions, or usage support.
+    about: These projects are functionally complete. No feature requests, questions, or usage support.
